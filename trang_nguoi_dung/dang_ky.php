@@ -1,76 +1,140 @@
 <?php
 session_start();
-require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once "../includes/db.php";
+
+// Trang trước (nếu đăng ký xong quay lại)
+$redirect = $_GET["redirect"] ?? "../index.php";
+
+$thong_bao = "";
+$thanh_cong = false;
+
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+
+    $ho_ten = trim($_POST["ho_ten"]);
+    $email = trim($_POST["email"]);
+    $username = trim($_POST["ten_dang_nhap"]);
+    $pass = trim($_POST["mat_khau"]);
+    $sdt  = trim($_POST["so_dien_thoai"]);
+    $dia_chi = trim($_POST["dia_chi"]);
+    $gioi_tinh = $_POST["gioi_tinh"] ?? "";
+    $ngay_sinh = $_POST["ngay_sinh"] ?? "";
+
+    // Kiểm tra email đã tồn tại
+    $stmt = $pdo->prepare("SELECT id_nguoi_dung FROM nguoidung WHERE email=? LIMIT 1");
+    $stmt->execute([$email]);
+    if ($stmt->fetch()) {
+        $thong_bao = "Email đã được sử dụng!";
+    } else {
+        // Hash mật khẩu
+        $pass_hash = password_hash($pass, PASSWORD_BCRYPT);
+
+        // Thêm vào database
+        $ins = $pdo->prepare("
+            INSERT INTO nguoidung 
+            (ho_ten, email, ten_dang_nhap, mat_khau, so_dien_thoai, dia_chi, gioi_tinh, ngay_sinh)
+            VALUES (?,?,?,?,?,?,?,?)
+        ");
+
+        $ins->execute([$ho_ten, $email, $username, $pass_hash, $sdt, $dia_chi, $gioi_tinh, $ngay_sinh]);
+
+        $thanh_cong = true;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Đăng Ký Tài Khoản - Crocs Vietnam</title>
-
-<script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@200..800&display=swap" rel="stylesheet">
-
-<style>
-body { font-family: 'Plus Jakarta Sans', sans-serif; }
-input[type="radio"]:checked + label {
-    background:#000;color:#fff;border-color:#000
-}
-</style>
+<meta charset="UTF-8">
+<title>Đăng ký</title>
+<link rel="stylesheet" href="../assets/css/auth.css?v=<?= time() ?>">
 </head>
+<body>
 
-<body class="bg-white">
+<?php include "../giao_dien/header.php"; ?>
 
-<?php include __DIR__ . '/../giao_dien/header.php'; ?>
+<div class="auth-wrapper">
+    <div class="auth-container single">
 
-<main class="max-w-[520px] mx-auto px-4 py-16">
+        <div class="auth-panel">
+            <h2>Đăng ký tài khoản</h2>
 
-<h1 class="text-3xl font-black uppercase text-center mb-10">
-    Đăng ký tài khoản
-</h1>
+            <?php if ($thong_bao): ?>
+                <div class="auth-error"><?= $thong_bao ?></div>
+            <?php endif; ?>
 
-<form method="post" action="xu_ly_dang_ky.php" class="space-y-4">
+            <?php if ($thanh_cong): ?>
+                <div class="auth-success">
+                    Tạo tài khoản thành công! <br>
+                    <a href="dang_nhap.php?redirect=<?= urlencode($redirect) ?>">Đăng nhập ngay</a>
+                </div>
+            <?php else: ?>
 
-<div class="flex gap-4">
-    <input name="ho" placeholder="Họ" required class="w-1/2 border px-4 py-3 rounded">
-    <input name="ten" placeholder="Tên" required class="w-1/2 border px-4 py-3 rounded">
+            <form method="post">
+
+                <div class="auth-input">
+                    <label>Họ tên</label>
+                    <input type="text" name="ho_ten" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Email</label>
+                    <input type="email" name="email" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Username</label>
+                    <input type="text" name="ten_dang_nhap" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Mật khẩu</label>
+                    <input type="password" name="mat_khau" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Số điện thoại</label>
+                    <input type="text" name="so_dien_thoai" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Địa chỉ</label>
+                    <input type="text" name="dia_chi" required>
+                </div>
+
+                <div class="auth-input">
+                    <label>Giới tính</label>
+                    <select name="gioi_tinh">
+                        <option value="">Không chọn</option>
+                        <option value="Nam">Nam</option>
+                        <option value="Nữ">Nữ</option>
+                        <option value="Khác">Khác</option>
+                    </select>
+                </div>
+
+                <div class="auth-input">
+                    <label>Ngày sinh</label>
+                    <input type="date" name="ngay_sinh">
+                </div>
+
+                <button class="auth-btn">Đăng ký</button>
+
+                <input type="hidden" name="redirect" value="<?= htmlspecialchars($redirect) ?>">
+
+            </form>
+
+            <p class="switch-link">
+                Đã có tài khoản?
+                <a href="dang_nhap.php?redirect=<?= urlencode($redirect) ?>">Đăng nhập</a>
+            </p>
+
+            <?php endif; ?>
+
+        </div>
+
+    </div>
 </div>
 
-<input name="ten_dang_nhap" placeholder="Tên đăng nhập" required class="w-full border px-4 py-3 rounded">
+<?php include "../giao_dien/footer.php"; ?>
 
-<input name="email" type="email" placeholder="Email" required class="w-full border px-4 py-3 rounded">
-
-<input name="so_dien_thoai" placeholder="Số điện thoại" class="w-full border px-4 py-3 rounded">
-
-<input name="dia_chi" placeholder="Địa chỉ" class="w-full border px-4 py-3 rounded">
-
-<div class="flex gap-4">
-    <input hidden id="gt_nam" type="radio" name="gioi_tinh" value="Nam">
-    <label for="gt_nam" class="border px-4 py-2 rounded cursor-pointer">Nam</label>
-
-    <input hidden id="gt_nu" type="radio" name="gioi_tinh" value="Nữ">
-    <label for="gt_nu" class="border px-4 py-2 rounded cursor-pointer">Nữ</label>
-</div>
-
-<input name="ngay_sinh" type="date" class="w-full border px-4 py-3 rounded">
-
-<input name="mat_khau" type="password" placeholder="Mật khẩu" required class="w-full border px-4 py-3 rounded">
-
-<input name="xac_nhan_mat_khau" type="password" placeholder="Xác nhận mật khẩu" required class="w-full border px-4 py-3 rounded">
-
-<button class="w-full bg-black text-white py-4 rounded-full font-bold uppercase">
-    Đăng ký
-</button>
-
-<p class="text-center text-sm mt-4">
-    Đã có tài khoản?
-    <a href="dang_nhap.php" class="font-bold underline">Đăng nhập</a>
-</p>
-
-</form>
-</main>
-
-<?php include __DIR__ . '/../giao_dien/footer.php'; ?>
 </body>
 </html>

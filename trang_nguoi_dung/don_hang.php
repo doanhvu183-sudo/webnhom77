@@ -1,100 +1,149 @@
 <?php
 session_start();
-require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once "../includes/db.php";
 
-/* ================== LOGIN ================== */
-if (!isset($_SESSION['nguoi_dung'])) {
-    header('Location: dang_nhap.php');
+// Kiểm tra đăng nhập
+if (!isset($_SESSION["user"])) {
+    header("Location: dang_nhap.php?redirect=don_hang.php");
     exit;
 }
 
-$id_nguoi_dung = $_SESSION['nguoi_dung']['id'];
+$id_user = $_SESSION["user"]["id"];
 
-/* ================== LẤY ĐƠN ================== */
+// Lấy danh sách đơn hàng + ảnh đại diện
 $stmt = $pdo->prepare("
-    SELECT *
-    FROM donhang
-    WHERE id_nguoi_dung = ?
-    ORDER BY ngay_dat DESC
+    SELECT 
+        dh.*, 
+        (SELECT sp.hinh_anh 
+         FROM chitiet_donhang ct 
+         JOIN sanpham sp ON sp.id_san_pham = ct.id_san_pham
+         WHERE ct.id_don_hang = dh.id_don_hang
+         LIMIT 1
+        ) AS anh_dai_dien
+    FROM donhang dh
+    WHERE dh.id_nguoi_dung = ?
+    ORDER BY dh.id_don_hang DESC
 ");
-$stmt->execute([$id_nguoi_dung]);
-$donhangs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$stmt->execute([$id_user]);
+$orders = $stmt->fetchAll();
 
-$mapTrangThai = [
-    'CHO_XU_LY' => 'Chờ xử lý',
-    'DANG_GIAO' => 'Đang giao',
-    'HOAN_TAT'  => 'Hoàn tất'
-];
+function vnd($n){ return number_format($n,0,',','.')." đ"; }
 ?>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Đơn hàng của tôi</title>
+<link rel="stylesheet" href="../assets/css/orders.css?v=<?= time() ?>">
 
-<?php require_once __DIR__ . '/../giao_dien/header.php'; ?>
+<style>
+.btn-cancel {
+    padding: 6px 14px;
+    background: #ff3b3b;
+    color: white !important;
+    border-radius: 6px;
+    font-size: 14px;
+    display: inline-block;
+    text-decoration: none;
+    font-weight: 600;
+}
+.btn-cancel:hover {
+    background: #e60000;
+}
 
-<main class="max-w-[1200px] mx-auto px-4 py-10">
+.btn-detail {
+    padding: 6px 14px;
+    background: #0080ff;
+    color: white !important;
+    border-radius: 6px;
+    font-size: 14px;
+    display: inline-block;
+    text-decoration: none;
+    font-weight: 600;
+}
+.btn-detail:hover {
+    background: #005fcc;
+}
+</style>
 
-<h1 class="text-3xl font-black mb-8">Đơn hàng của tôi</h1>
+</head>
 
-<?php if (empty($donhangs)): ?>
-    <div class="border rounded-xl p-8 text-center text-gray-500">
-        Bạn chưa có đơn hàng nào.
-    </div>
-<?php endif; ?>
+<body>
+<?php include "../giao_dien/header.php"; ?>
 
-<div class="space-y-6">
+<div class="order-wrapper">
+    <h2>Đơn hàng của tôi</h2>
 
-<?php foreach ($donhangs as $dh): ?>
+    <?php if (empty($orders)): ?>
+        <p class="no-order">Bạn chưa có đơn hàng nào.</p>
+    <?php else: ?>
 
-<?php
-    // Lấy 1 ảnh đại diện cho đơn
-    $stmtImg = $pdo->prepare("
-        SELECT sp.hinh_anh
-        FROM chitiet_donhang ct
-        JOIN sanpham sp ON sp.id_san_pham = ct.id_san_pham
-        WHERE ct.id_don_hang = ?
-        LIMIT 1
-    ");
-    $stmtImg->execute([$dh['id_don_hang']]);
-    $img = $stmtImg->fetchColumn();
-?>
+        <table class="order-table">
+            <thead>
+                <tr>
+                    <th>Ảnh</th>
+                    <th>Mã đơn</th>
+                    <th>Tổng tiền</th>
+                    <th>Trạng thái</th>
+                    <th>Thanh toán</th>
+                    <th>Ngày đặt</th>
+                    <th>Hủy đơn</th>
+                    <th>Chi tiết</th>
+                </tr>
+            </thead>
 
-<div class="border rounded-xl p-6 bg-white flex flex-col md:flex-row gap-6 items-center">
+            <tbody>
+            <?php foreach ($orders as $o): ?>
+                <tr>
 
-    <!-- IMAGE -->
-    <img src="../assets/img/<?= htmlspecialchars($img ?: 'no-image.png') ?>"
-         class="w-24 h-24 object-contain border rounded">
+                    <!-- ẢNH -->
+                    <td>
+                        <?php if ($o["anh_dai_dien"]): ?>
+                            <img src="../assets/img/<?= $o['anh_dai_dien'] ?>"
+                                 style="width:60px;height:60px;border-radius:8px;object-fit:cover;">
+                        <?php else: ?>
+                            <div style="width:60px;height:60px;background:#eee;border-radius:8px;"></div>
+                        <?php endif; ?>
+                    </td>
 
-    <!-- INFO -->
-    <div class="flex-1">
-        <div class="font-bold text-lg mb-1">
-            Mã đơn #<?= $dh['id_don_hang'] ?>
-        </div>
-        <div class="text-sm text-gray-500 mb-2">
-            Ngày đặt: <?= date('d/m/Y H:i', strtotime($dh['ngay_dat'])) ?>
-        </div>
-        <div class="text-sm">
-            Trạng thái:
-            <span class="font-bold text-primary">
-                <?= $mapTrangThai[$dh['trang_thai']] ?? 'Chờ xử lý' ?>
-            </span>
-        </div>
-    </div>
+                    <td>#<?= $o["ma_don_hang"] ?></td>
+                    <td><?= vnd($o["tong_tien"]) ?></td>
+                    <td><?= $o["trang_thai"] ?></td>
+                    <td><?= $o["phuong_thuc"] ?></td>
+                    <td><?= date("d/m/Y H:i", strtotime($o["ngay_dat"])) ?></td>
 
-    <!-- TOTAL (CHUẨN: SAU VOUCHER) -->
-    <div class="text-right">
-        <div class="font-black text-xl text-primary mb-2">
-            <?= number_format($dh['tong_thanh_toan']) ?>₫
-        </div>
-        <a href="hoan_tat.php?id=<?= $dh['id_don_hang'] ?>"
-           class="inline-block px-4 py-2 border rounded-full text-sm font-bold hover:bg-gray-100">
-            Xem chi tiết
+                    <!-- CỘT HỦY ĐƠN -->
+                    <td>
+    <?php if ($o["trang_thai"] === "Chờ duyệt"): ?>
+        <a class="btn-cancel"
+           href="../xu_ly/huy_don.php?id=<?= $o["id_don_hang"] ?>"
+           onclick="return confirm('Bạn có chắc chắn muốn hủy đơn này?')">
+            Hủy đơn
         </a>
-    </div>
+    <?php else: ?>
+        <span style="color:#999;">Không thể hủy</span>
+    <?php endif; ?>
+</td>
+
+
+                    <!-- CỘT CHI TIẾT -->
+                    <td>
+                        <a class="btn-detail"
+                           href="don_hang_chi_tiet.php?id=<?= $o["id_don_hang"] ?>">
+                            Xem
+                        </a>
+                    </td>
+
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+
+        </table>
+
+    <?php endif; ?>
 
 </div>
 
-<?php endforeach; ?>
-
-</div>
-
-</main>
-
-<?php require_once __DIR__ . '/../giao_dien/footer.php'; ?>
+<?php include "../giao_dien/footer.php"; ?>
+</body>
+</html>
