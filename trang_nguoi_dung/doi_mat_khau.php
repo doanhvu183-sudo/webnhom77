@@ -1,100 +1,92 @@
 <?php
 session_start();
-require_once "../includes/db.php";
+require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 
-if (!isset($_SESSION['user'])) {
-    header("Location: dang_nhap.php?redirect=doi_mat_khau.php");
+if (!isset($_SESSION['nguoi_dung'])) {
+    header("Location: dang_nhap.php");
     exit;
 }
 
-$user = $_SESSION['user'];
+$user = $_SESSION['nguoi_dung'];
+$error = '';
+$success = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $mat_khau_cu = $_POST['mat_khau_cu'] ?? '';
+    $mat_khau_moi = $_POST['mat_khau_moi'] ?? '';
+    $xac_nhan = $_POST['xac_nhan'] ?? '';
+
+    if ($mat_khau_moi !== $xac_nhan) {
+        $error = 'Mật khẩu xác nhận không khớp';
+    } else {
+        $stmt = $pdo->prepare("SELECT mat_khau FROM nguoidung WHERE id_nguoi_dung = ?");
+        $stmt->execute([$user['id']]);
+        $hash = $stmt->fetchColumn();
+
+        if (!$hash || !password_verify($mat_khau_cu, $hash)) {
+            $error = 'Mật khẩu hiện tại không đúng';
+        } else {
+            $newHash = password_hash($mat_khau_moi, PASSWORD_DEFAULT);
+            $upd = $pdo->prepare("
+                UPDATE nguoidung SET mat_khau = ? WHERE id_nguoi_dung = ?
+            ");
+            $upd->execute([$newHash, $user['id']]);
+
+            $success = 'Đổi mật khẩu thành công';
+        }
+    }
+}
 ?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="UTF-8">
-<title>Đổi mật khẩu</title>
 
-<style>
-.page-wrap {
-    max-width: 500px;
-    margin: 40px auto;
-    padding: 25px;
-    border-radius: 12px;
-    background: #fff;
-    box-shadow: 0 0 10px #ddd;
-    font-family: Arial;
-}
-h2 {
-    margin-bottom: 20px;
-}
-label {
-    font-weight: bold;
-    margin-top: 10px;
-}
-input {
-    width: 100%;
-    padding: 12px;
-    border-radius: 8px;
-    border: 1px solid #ccc;
-    margin-top: 5px;
-}
-.btn-save {
-    margin-top: 20px;
-    width: 100%;
-    padding: 12px;
-    background: black;
-    color: white;
-    font-size: 15px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-}
-.btn-save:hover {
-    opacity: 0.85;
-}
-.message {
-    margin-top: 10px;
-    padding: 10px;
-    border-radius: 6px;
-}
-.success { background: #d4ffd4; color: #0a7a0a; }
-.error { background: #ffe0e0; color: #b30000; }
-</style>
-</head>
+<?php require_once __DIR__ . '/../giao_dien/header.php'; ?>
 
-<body>
+<main class="max-w-[600px] mx-auto px-6 py-12">
 
-<?php include "../giao_dien/header.php"; ?>
+<h1 class="text-2xl font-black mb-6">Đổi mật khẩu</h1>
 
-<div class="page-wrap">
+<form method="post" class="border rounded-xl p-6 space-y-4 bg-white">
 
-    <h2>Đổi mật khẩu</h2>
-
-    <?php if(isset($_GET["success"])): ?>
-        <div class="message success">Đổi mật khẩu thành công!</div>
+    <?php if ($error): ?>
+        <div class="bg-red-50 text-red-600 px-4 py-3 rounded font-bold">
+            <?= $error ?>
+        </div>
     <?php endif; ?>
 
-    <?php if(isset($_GET["error"])): ?>
-        <div class="message error"><?= htmlspecialchars($_GET["error"]) ?></div>
+    <?php if ($success): ?>
+        <div class="bg-green-50 text-green-600 px-4 py-3 rounded font-bold">
+            <?= $success ?>
+        </div>
     <?php endif; ?>
 
-    <form action="../xu_ly/xl_doi_mat_khau.php" method="POST">
+    <div>
+        <label class="font-bold">Mật khẩu hiện tại</label>
+        <input type="password" name="mat_khau_cu" required
+               class="w-full border rounded px-4 py-2 mt-1">
+    </div>
 
-        <label>Mật khẩu hiện tại</label>
-        <input type="password" name="old_pass" required>
+    <div>
+        <label class="font-bold">Mật khẩu mới</label>
+        <input type="password" name="mat_khau_moi" required
+               class="w-full border rounded px-4 py-2 mt-1">
+    </div>
 
-        <label>Mật khẩu mới</label>
-        <input type="password" name="new_pass" required>
+    <div>
+        <label class="font-bold">Xác nhận mật khẩu mới</label>
+        <input type="password" name="xac_nhan" required
+               class="w-full border rounded px-4 py-2 mt-1">
+    </div>
 
-        <label>Nhập lại mật khẩu mới</label>
-        <input type="password" name="confirm_pass" required>
+    <button class="w-full bg-black text-white py-3 rounded-full font-black">
+        Cập nhật mật khẩu
+    </button>
 
-        <button class="btn-save">Lưu thay đổi</button>
-    </form>
+    <a href="tai_khoan.php"
+       class="block text-center text-sm underline text-gray-500">
+        ← Quay lại tài khoản
+    </a>
 
-</div>
+</form>
 
-<?php include "../giao_dien/footer.php"; ?>
-</body>
-</html>
+</main>
+
+<?php require_once __DIR__ . '/../giao_dien/footer.php'; ?>

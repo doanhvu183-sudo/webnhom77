@@ -1,38 +1,31 @@
 <?php
 session_start();
-require_once "../includes/db.php";
+require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 
-$id = intval($_POST['id_san_pham']);
-$qty = intval($_POST['so_luong']);
+$id   = (int)$_POST['id'];
+$size = (int)$_POST['size'];
+$qty  = (int)$_POST['qty'];
 
-if ($qty < 1) $qty = 1;
-
-// Lấy sản phẩm từ DB
-$stmt = $pdo->prepare("SELECT * FROM sanpham WHERE id_san_pham = ?");
+$stmt = $pdo->prepare("SELECT * FROM sanpham WHERE id_san_pham=?");
 $stmt->execute([$id]);
 $sp = $stmt->fetch();
 
-if (!$sp) {
-    die("Sản phẩm không tồn tại");
-}
+if (!$sp) die('SP không tồn tại');
 
-// Nếu giỏ chưa tồn tại → tạo
-if (!isset($_SESSION['cart'])) {
-    $_SESSION['cart'] = [];
-}
+$orderId = 'OD'.time().rand(100,999);
 
-// Nếu sản phẩm đã có trong giỏ
-if (isset($_SESSION['cart'][$id])) {
-    $_SESSION['cart'][$id]['so_luong'] += $qty;
-} else {
-    $_SESSION['cart'][$id] = [
+$_SESSION['cart'][$orderId] = [
+    'created_at' => date('Y-m-d H:i'),
+    'items' => [[
         'id' => $sp['id_san_pham'],
         'ten' => $sp['ten_san_pham'],
         'gia' => $sp['gia'],
-        'anh' => $sp['hinh_anh'],
-        'so_luong' => $qty
-    ];
-}
+        'qty' => $qty,
+        'size' => $size,
+        'hinh_anh' => $sp['hinh_anh']
+    ]]
+];
 
-header("Location: gio_hang.php");
-exit;
+$_SESSION['msg'] = 'Đã thêm vào giỏ hàng';
+
+header("Location: chi_tiet_san_pham.php?id=$id");
