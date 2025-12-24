@@ -1,695 +1,755 @@
 <?php
 // admin/voucher.php
-session_start();
+
+/* ================= BOOT ================= */
+if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 
+// ưu tiên dùng helpers/hamChung nếu bạn đã có
+if (file_exists(__DIR__ . '/includes/helpers.php')) {
+  require_once __DIR__ . '/includes/helpers.php';
+} elseif (file_exists(__DIR__ . '/includes/hamChung.php')) {
+  require_once __DIR__ . '/includes/hamChung.php';
+}
+
+/* ================= SAFE HELPERS (không redeclare) ================= */
+if (!function_exists('h')) {
+  function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+}
+if (!function_exists('money_vnd')) {
+  function money_vnd($n){
+    $n = (int)($n ?? 0);
+    return number_format($n, 0, ',', '.') . ' ₫';
+  }
+}
+if (!function_exists('tableExists')) {
+  function tableExists(PDO $pdo, $name){
+    $st=$pdo->prepare("SHOW TABLES LIKE ?"); $st->execute([$name]);
+    return (bool)$st->fetchColumn();
+  }
+}
+if (!function_exists('getCols')) {
+  function getCols(PDO $pdo, $table){
+    $st=$pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?");
+    $st->execute([$table]);
+    return $st->fetchAll(PDO::FETCH_COLUMN);
+  }
+}
+if (!function_exists('pickCol')) {
+  function pickCol(array $cols, array $cands){
+    foreach($cands as $c){ if(in_array($c,$cols,true)) return $c; }
+    return null;
+  }
+}
+if (!function_exists('redirectWith')) {
+  function redirectWith($params=[]){
+    header("Location: voucher.php".($params?('?'.http_build_query($params)):''));
+    exit;
+  }
+}
+if (!function_exists('auth_me')) {
+  function auth_me(){
+    $me = $_SESSION['admin'] ?? [];
+    $id = (int)($me['id'] ?? $me['id_admin'] ?? $me['id_nguoi_dung'] ?? 0);
+    $vaiTro = strtoupper(trim((string)($me['vai_tro'] ?? $me['role'] ?? 'ADMIN')));
+    $isAdmin = ($vaiTro === 'ADMIN');
+    return [$me,$id,$vaiTro,$isAdmin];
+  }
+}
+
+/**
+ * Log vào nhatky_hoatdong (đúng bảng bạn đang có)
+ * Cột theo ảnh: id_log, id_admin, vai_tro, hanh_dong, mo_ta, bang_lien_quan, id_ban_ghi, du_lieu_json, ip, user_agent, ngay_tao
+ */
+if (!function_exists('nhatky_log')) {
+  function nhatky_log(PDO $pdo, string $hanh_dong, string $mo_ta, ?string $bang=null, ?int $id_ban_ghi=null, $data=null){
+    if (!tableExists($pdo,'nhatky_hoatdong')) return;
+
+    $cols = getCols($pdo,'nhatky_hoatdong');
+    $ID_ADMIN = pickCol($cols,['id_admin','admin_id','id_user']);
+    $VAI_TRO  = pickCol($cols,['vai_tro','role']);
+    $HANH     = pickCol($cols,['hanh_dong','action']);
+    $MOTA     = pickCol($cols,['mo_ta','mo_ta','description']);
+    $BANG     = pickCol($cols,['bang_lien_quan','doi_tuong','table_name']);
+    $IDREC    = pickCol($cols,['id_ban_ghi','doi_tuong_id','record_id']);
+    $JSON     = pickCol($cols,['du_lieu_json','json','data_json']);
+    $IP       = pickCol($cols,['ip']);
+    $UA       = pickCol($cols,['user_agent']);
+    $NGAY     = pickCol($cols,['ngay_tao','created_at']);
+
+    $fields=[]; $vals=[]; $bind=[];
+
+    [$me,$myId,$vaiTro,$isAdmin] = auth_me();
+
+    if ($ID_ADMIN){ $fields[]=$ID_ADMIN; $vals[]=':aid'; $bind[':aid']=$myId?:null; }
+    if ($VAI_TRO){  $fields[]=$VAI_TRO;  $vals[]=':role'; $bind[':role']=strtolower($vaiTro?:'admin'); }
+    if ($HANH){    $fields[]=$HANH;    $vals[]=':act'; $bind[':act']=$hanh_dong; }
+    if ($MOTA){    $fields[]=$MOTA;    $vals[]=':des'; $bind[':des']=$mo_ta; }
+    if ($BANG && $bang!==null){  $fields[]=$BANG; $vals[]=':tbl'; $bind[':tbl']=$bang; }
+    if ($IDREC && $id_ban_ghi!==null){ $fields[]=$IDREC; $vals[]=':rid'; $bind[':rid']=$id_ban_ghi; }
+    if ($JSON){
+      $fields[]=$JSON; $vals[]=':js';
+      $bind[':js']= is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_UNICODE);
+    }
+    if ($IP){ $fields[]=$IP; $vals[]=':ip'; $bind[':ip']=($_SERVER['REMOTE_ADDR'] ?? null); }
+    if ($UA){ $fields[]=$UA; $vals[]=':ua'; $bind[':ua']=($_SERVER['HTTP_USER_AGENT'] ?? null); }
+    if ($NGAY){ $fields[]=$NGAY; $vals[]='NOW()'; }
+
+    if (!$fields) return;
+
+    $sql="INSERT INTO nhatky_hoatdong(".implode(',',$fields).") VALUES(".implode(',',$vals).")";
+    $pdo->prepare($sql)->execute($bind);
+  }
+}
+
 /* ================= AUTH ================= */
-if (empty($_SESSION['admin']) || (!isset($_SESSION['admin']['id']) && !isset($_SESSION['admin']['id_admin']))) {
-  header("Location: dang_nhap.php"); exit;
-}
-$me = $_SESSION['admin'];
-$vaiTro = strtoupper(trim($me['vai_tro'] ?? 'ADMIN'));
-$isAdmin = ($vaiTro === 'ADMIN');
+if (empty($_SESSION['admin'])) { header("Location: dang_nhap.php"); exit; }
+[$me,$myId,$vaiTro,$isAdmin] = auth_me();
 
-/* ================= Helpers ================= */
-function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-function tableExists(PDO $pdo, $name){
-  $st=$pdo->prepare("SHOW TABLES LIKE ?"); $st->execute([$name]);
-  return (bool)$st->fetchColumn();
-}
-function getCols(PDO $pdo, $table){
-  $st=$pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?");
-  $st->execute([$table]);
-  return $st->fetchAll(PDO::FETCH_COLUMN);
-}
-function pickCol(array $cols, array $cands){
-  foreach($cands as $c){ if(in_array($c,$cols,true)) return $c; }
-  return null;
-}
-function redirectWith($params=[]){
-  header("Location: voucher.php".($params?('?'.http_build_query($params)):''));
-  exit;
+$ACTIVE = 'voucher';
+$PAGE_TITLE = 'Quản lý Voucher';
+
+// nếu bạn có requirePermission thì gọi, không có thì bỏ qua
+if (function_exists('requirePermission')) {
+  requirePermission('voucher');
 }
 
-/* ================= Detect voucher table ================= */
-$voucherTable = null;
-foreach (['voucher','khuyenmai','khuyen_mai','ma_giam_gia','uudai'] as $t){
-  if (tableExists($pdo,$t)) { $voucherTable = $t; break; }
+/* ================= VALIDATE TABLES ================= */
+if (!tableExists($pdo,'voucher')) {
+  // render tối giản (chưa include layout để không lỗi header)
+  die("Thiếu bảng <b>voucher</b>.");
 }
-if (!$voucherTable) die("Không tìm thấy bảng voucher/khuyến mãi trong DB (voucher/khuyenmai/ma_giam_gia...).");
 
-$vCols = getCols($pdo, $voucherTable);
+$vcCols = getCols($pdo,'voucher');
+$VC_ID     = pickCol($vcCols, ['id_voucher','id','voucher_id']);
+$VC_CODE   = pickCol($vcCols, ['ma_voucher','ma','code','voucher_code']);
+$VC_TYPE   = pickCol($vcCols, ['loai','type','kieu']);
+$VC_VALUE  = pickCol($vcCols, ['gia_tri','value','muc_giam','giam']);
+$VC_MAX    = pickCol($vcCols, ['giam_toi_da','max_discount','toi_da']);
+$VC_START  = pickCol($vcCols, ['ngay_bat_dau','start_date','bat_dau']);
+$VC_END    = pickCol($vcCols, ['ngay_ket_thuc','end_date','ket_thuc']);
+$VC_ACTIVE = pickCol($vcCols, ['trang_thai','is_active','active','status']);
+$VC_LIMIT  = pickCol($vcCols, ['gioi_han','so_luot','luot_dung_toi_da','max_use']);
+$VC_USED   = pickCol($vcCols, ['da_dung','used','used_count']);
+$VC_CREATED= pickCol($vcCols, ['ngay_tao','created_at']);
+$VC_UPDATED= pickCol($vcCols, ['ngay_cap_nhat','updated_at']);
 
-$V_ID      = pickCol($vCols, ['id_voucher','id_khuyenmai','id_km','id','voucher_id','khuyenmai_id']);
-$V_CODE    = pickCol($vCols, ['ma','ma_voucher','ma_khuyen_mai','code','voucher_code']);
-$V_NAME    = pickCol($vCols, ['ten','ten_voucher','ten_khuyen_mai','tieu_de','name','title']);
-$V_DESC    = pickCol($vCols, ['mo_ta','noi_dung','description','content']);
-$V_TYPE    = pickCol($vCols, ['loai','kieu','type']); // percent/fixed
-$V_VALUE   = pickCol($vCols, ['gia_tri','giam_gia','discount','value','so_tien_giam']);
-$V_MIN     = pickCol($vCols, ['don_toi_thieu','gia_tri_toi_thieu','min_order','min_total']);
-$V_MAX     = pickCol($vCols, ['giam_toi_da','max_discount','max_value']);
-$V_LIMIT   = pickCol($vCols, ['so_lan','gioi_han','usage_limit','so_luong']);
-$V_USED    = pickCol($vCols, ['da_dung','so_lan_da_dung','used','used_count']);
-$V_START   = pickCol($vCols, ['ngay_bat_dau','bat_dau','start_date','tu_ngay']);
-$V_END     = pickCol($vCols, ['ngay_ket_thuc','ket_thuc','end_date','den_ngay']);
-$V_STATUS  = pickCol($vCols, ['trang_thai','is_active','active','status']);
-$V_CREATE  = pickCol($vCols, ['ngay_tao','created_at']);
+if(!$VC_ID || !$VC_CODE) die("Bảng voucher thiếu cột id/code.");
 
-if (!$V_ID || !$V_CODE) die("Bảng <b>{$voucherTable}</b> thiếu cột bắt buộc: id / mã voucher.");
+/* ================= USED COUNT FROM DONHANG (nếu có) ================= */
+$hasDH = tableExists($pdo,'donhang');
+$dhCols = $hasDH ? getCols($pdo,'donhang') : [];
+$DH_VC  = $hasDH ? pickCol($dhCols,['ma_voucher','voucher_code','code_voucher']) : null;
 
-/* ================= POST: add/edit/delete/toggle ================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+/* ================= POST ACTIONS (BEFORE RENDER) ================= */
+if ($_SERVER['REQUEST_METHOD']==='POST') {
   $action = $_POST['action'] ?? '';
   $id = (int)($_POST['id'] ?? 0);
 
-  // Gom dữ liệu form
-  $code  = trim($_POST['ma'] ?? '');
-  $name  = trim($_POST['ten'] ?? '');
-  $desc  = trim($_POST['mo_ta'] ?? '');
-  $type  = trim($_POST['loai'] ?? '');
-  $value = trim($_POST['gia_tri'] ?? '');
-  $min   = trim($_POST['don_toi_thieu'] ?? '');
-  $max   = trim($_POST['giam_toi_da'] ?? '');
-  $limit = trim($_POST['gioi_han'] ?? '');
-  $start = trim($_POST['ngay_bat_dau'] ?? '');
-  $end   = trim($_POST['ngay_ket_thuc'] ?? '');
-  $status= trim($_POST['trang_thai'] ?? '');
+  // helper đọc input
+  $code = strtoupper(trim((string)($_POST['ma_voucher'] ?? '')));
+  $type = strtolower(trim((string)($_POST['loai'] ?? 'percent'))); // percent | fixed
+  $val  = trim((string)($_POST['gia_tri'] ?? '0'));
+  $max  = trim((string)($_POST['giam_toi_da'] ?? ''));
+  $stt  = (int)($_POST['trang_thai'] ?? 1);
+  $start = trim((string)($_POST['ngay_bat_dau'] ?? ''));
+  $end   = trim((string)($_POST['ngay_ket_thuc'] ?? ''));
+  $limit = trim((string)($_POST['gioi_han'] ?? ''));
 
-  // Normalize số
-  $toInt = function($x){
-    if ($x === '' || $x === null) return null;
-    $x = preg_replace('/[^\d\-]/','',$x);
-    if ($x === '' || $x === '-') return null;
-    return (int)$x;
+  // chuẩn hóa type
+  if (!in_array($type,['percent','fixed'],true)) $type='percent';
+  $valInt = (int)$val;
+  $maxInt = ($max===''? null : (int)$max);
+  $limitInt = ($limit===''? null : (int)$limit);
+
+  // validate date dạng YYYY-MM-DD (input type=date)
+  $startDb = ($start!=='' ? $start : null);
+  $endDb   = ($end!=='' ? $end : null);
+
+  // log wrapper
+  $log = function($hanh_dong,$mo_ta,$idrec=null,$data=null) use($pdo){
+    nhatky_log($pdo,$hanh_dong,$mo_ta,'voucher',$idrec,$data);
   };
 
-  if ($action === 'them') {
-    if (!$isAdmin) redirectWith(['type'=>'error','msg'=>'Nhân viên không có quyền thêm voucher.']);
-    if ($code === '') redirectWith(['type'=>'error','msg'=>'Vui lòng nhập Mã voucher.']);
+  if ($action==='them') {
+    if ($code==='') redirectWith(['type'=>'error','msg'=>'Thiếu mã voucher.']);
+    // check trùng code
+    $ck=$pdo->prepare("SELECT COUNT(*) FROM voucher WHERE $GLOBALS[VC_CODE]=?");
+    $ck->execute([$code]);
+    if ((int)$ck->fetchColumn()>0) redirectWith(['type'=>'error','msg'=>'Mã voucher đã tồn tại.']);
 
-    // Check trùng
-    $st = $pdo->prepare("SELECT COUNT(*) FROM {$voucherTable} WHERE {$V_CODE}=?");
-    $st->execute([$code]);
-    if ((int)$st->fetchColumn() > 0) redirectWith(['type'=>'error','msg'=>'Mã voucher đã tồn tại.']);
+    $fields=[];$vals=[];$bind=[];
+    $fields[]=$VC_CODE; $vals[]=':c'; $bind[':c']=$code;
 
-    $fields = [];
-    $vals   = [];
-    $bind   = [];
+    if ($VC_TYPE){  $fields[]=$VC_TYPE;  $vals[]=':t'; $bind[':t']=$type; }
+    if ($VC_VALUE){ $fields[]=$VC_VALUE; $vals[]=':v'; $bind[':v']=$valInt; }
+    if ($VC_MAX && $maxInt!==null){ $fields[]=$VC_MAX; $vals[]=':m'; $bind[':m']=$maxInt; }
+    if ($VC_START && $startDb!==null){ $fields[]=$VC_START; $vals[]=':s'; $bind[':s']=$startDb; }
+    if ($VC_END && $endDb!==null){ $fields[]=$VC_END; $vals[]=':e'; $bind[':e']=$endDb; }
+    if ($VC_ACTIVE){ $fields[]=$VC_ACTIVE; $vals[]=':a'; $bind[':a']=$stt; }
+    if ($VC_LIMIT && $limitInt!==null){ $fields[]=$VC_LIMIT; $vals[]=':l'; $bind[':l']=$limitInt; }
 
-    $fields[] = $V_CODE; $vals[]=':code'; $bind[':code']=$code;
+    if ($VC_CREATED){ $fields[]=$VC_CREATED; $vals[]='NOW()'; }
+    if ($VC_UPDATED){ $fields[]=$VC_UPDATED; $vals[]='NOW()'; }
 
-    if ($V_NAME && $name!==''){ $fields[]=$V_NAME; $vals[]=':name'; $bind[':name']=$name; }
-    if ($V_DESC && $desc!==''){ $fields[]=$V_DESC; $vals[]=':desc'; $bind[':desc']=$desc; }
-    if ($V_TYPE && $type!==''){ $fields[]=$V_TYPE; $vals[]=':type'; $bind[':type']=$type; }
-
-    if ($V_VALUE){ $fields[]=$V_VALUE; $vals[]=':val'; $bind[':val']=$toInt($value) ?? 0; }
-    if ($V_MIN){ $fields[]=$V_MIN; $vals[]=':min'; $bind[':min']=$toInt($min); }
-    if ($V_MAX){ $fields[]=$V_MAX; $vals[]=':max'; $bind[':max']=$toInt($max); }
-    if ($V_LIMIT){ $fields[]=$V_LIMIT; $vals[]=':lim'; $bind[':lim']=$toInt($limit); }
-
-    if ($V_START && $start!==''){ $fields[]=$V_START; $vals[]=':st'; $bind[':st']=$start; }
-    if ($V_END && $end!==''){ $fields[]=$V_END; $vals[]=':en'; $bind[':en']=$end; }
-
-    if ($V_STATUS){
-      $fields[]=$V_STATUS; $vals[]=':ac';
-      // ưu tiên 1/0 nếu cột numeric, còn string thì vẫn ok (db tự ép hoặc bạn sửa)
-      $bind[':ac'] = ($status==='' ? 1 : (is_numeric($status) ? (int)$status : $status));
-    }
-
-    if ($V_CREATE){ $fields[]=$V_CREATE; $vals[]='NOW()'; }
-
-    $sql = "INSERT INTO {$voucherTable}(".implode(',',$fields).") VALUES(".implode(',',$vals).")";
+    $sql="INSERT INTO voucher(".implode(',',$fields).") VALUES(".implode(',',$vals).")";
     $pdo->prepare($sql)->execute($bind);
+    $newId = (int)$pdo->lastInsertId();
 
-    redirectWith(['type'=>'ok','msg'=>'Đã thêm voucher.']);
+    $log('THEM_VOUCHER',"Thêm voucher $code",$newId,['code'=>$code,'type'=>$type,'value'=>$valInt,'max'=>$maxInt,'start'=>$startDb,'end'=>$endDb,'active'=>$stt,'limit'=>$limitInt]);
+    redirectWith(['type'=>'ok','msg'=>'Đã thêm voucher.','xem'=>$newId]);
   }
 
-  if ($action === 'sua') {
-    if (!$isAdmin) redirectWith(['type'=>'error','msg'=>'Nhân viên không có quyền sửa voucher.']);
-    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID.']);
-    if ($code==='') redirectWith(['type'=>'error','msg'=>'Mã voucher không được trống.']);
+  if ($action==='sua') {
+    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID voucher.']);
+    if ($code==='') redirectWith(['type'=>'error','msg'=>'Thiếu mã voucher.']);
 
-    // Check trùng code (trừ chính nó)
-    $st = $pdo->prepare("SELECT COUNT(*) FROM {$voucherTable} WHERE {$V_CODE}=? AND {$V_ID}<>?");
-    $st->execute([$code,$id]);
-    if ((int)$st->fetchColumn() > 0) redirectWith(['type'=>'error','msg'=>'Mã voucher bị trùng với voucher khác.']);
+    // lấy cũ để log
+    $oldRow = $pdo->prepare("SELECT * FROM voucher WHERE $VC_ID=? LIMIT 1");
+    $oldRow->execute([$id]);
+    $old = $oldRow->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    $set = [];
-    $bind = [':id'=>$id, ':code'=>$code];
+    $set=[];$bind=[':id'=>$id];
 
-    $set[] = "{$V_CODE}=:code";
-    if ($V_NAME){ $set[]="{$V_NAME}=:name"; $bind[':name']=$name; }
-    if ($V_DESC){ $set[]="{$V_DESC}=:desc"; $bind[':desc']=$desc; }
-    if ($V_TYPE){ $set[]="{$V_TYPE}=:type"; $bind[':type']=$type; }
-    if ($V_VALUE){ $set[]="{$V_VALUE}=:val"; $bind[':val']=$toInt($value) ?? 0; }
-    if ($V_MIN){ $set[]="{$V_MIN}=:min"; $bind[':min']=$toInt($min); }
-    if ($V_MAX){ $set[]="{$V_MAX}=:max"; $bind[':max']=$toInt($max); }
-    if ($V_LIMIT){ $set[]="{$V_LIMIT}=:lim"; $bind[':lim']=$toInt($limit); }
-    if ($V_START){ $set[]="{$V_START}=:st"; $bind[':st']=($start!==''?$start:null); }
-    if ($V_END){ $set[]="{$V_END}=:en"; $bind[':en']=($end!==''?$end:null); }
-    if ($V_STATUS){
-      $set[]="{$V_STATUS}=:ac";
-      $bind[':ac'] = ($status==='' ? 1 : (is_numeric($status) ? (int)$status : $status));
+    // code
+    $set[]="$VC_CODE=:c"; $bind[':c']=$code;
+
+    if ($VC_TYPE){  $set[]="$VC_TYPE=:t";  $bind[':t']=$type; }
+    if ($VC_VALUE){ $set[]="$VC_VALUE=:v"; $bind[':v']=$valInt; }
+
+    if ($VC_MAX){
+      $set[]="$VC_MAX=:m";
+      $bind[':m']=($maxInt===null? null : $maxInt);
+    }
+    if ($VC_START){
+      $set[]="$VC_START=:s";
+      $bind[':s']=($startDb===null? null : $startDb);
+    }
+    if ($VC_END){
+      $set[]="$VC_END=:e";
+      $bind[':e']=($endDb===null? null : $endDb);
+    }
+    if ($VC_ACTIVE){
+      $set[]="$VC_ACTIVE=:a";
+      $bind[':a']=$stt;
+    }
+    if ($VC_LIMIT){
+      $set[]="$VC_LIMIT=:l";
+      $bind[':l']=($limitInt===null? null : $limitInt);
+    }
+    if ($VC_UPDATED){
+      $set[]="$VC_UPDATED=NOW()";
     }
 
-    $sql = "UPDATE {$voucherTable} SET ".implode(', ', $set)." WHERE {$V_ID}=:id";
+    $sql="UPDATE voucher SET ".implode(', ',$set)." WHERE $VC_ID=:id";
     $pdo->prepare($sql)->execute($bind);
 
-    redirectWith(['type'=>'ok','msg'=>'Đã cập nhật voucher.']);
+    $log('SUA_VOUCHER',"Cập nhật voucher #$id ($code)",$id,[
+      'before'=>$old,
+      'after'=>['code'=>$code,'type'=>$type,'value'=>$valInt,'max'=>$maxInt,'start'=>$startDb,'end'=>$endDb,'active'=>$stt,'limit'=>$limitInt]
+    ]);
+    redirectWith(['type'=>'ok','msg'=>'Đã cập nhật voucher.','xem'=>$id]);
   }
 
-  if ($action === 'xoa') {
-    if (!$isAdmin) redirectWith(['type'=>'error','msg'=>'Nhân viên không có quyền xoá voucher.']);
-    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID.']);
-    $pdo->prepare("DELETE FROM {$voucherTable} WHERE {$V_ID}=?")->execute([$id]);
+  if ($action==='toggle') {
+    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID voucher.']);
+    if (!$VC_ACTIVE) redirectWith(['type'=>'error','msg'=>'Bảng voucher không có cột trạng thái để bật/tắt.']);
+
+    $st=$pdo->prepare("SELECT $VC_ACTIVE, $VC_CODE FROM voucher WHERE $VC_ID=? LIMIT 1");
+    $st->execute([$id]);
+    $cur = $st->fetch(PDO::FETCH_ASSOC);
+    if(!$cur) redirectWith(['type'=>'error','msg'=>'Voucher không tồn tại.']);
+
+    $now = (int)($cur[$VC_ACTIVE] ?? 1);
+    $new = ($now==1?0:1);
+
+    $upd = $VC_UPDATED
+      ? "UPDATE voucher SET $VC_ACTIVE=?, $VC_UPDATED=NOW() WHERE $VC_ID=?"
+      : "UPDATE voucher SET $VC_ACTIVE=? WHERE $VC_ID=?";
+    $pdo->prepare($upd)->execute([$new,$id]);
+
+    $log('BAT_TAT_VOUCHER',"Bật/Tắt voucher #$id ({$cur[$VC_CODE]}): $now → $new",$id,['from'=>$now,'to'=>$new]);
+    redirectWith(['type'=>'ok','msg'=>'Đã cập nhật trạng thái.','xem'=>$id]);
+  }
+
+  if ($action==='xoa') {
+    if (!$isAdmin) redirectWith(['type'=>'error','msg'=>'Nhân viên không được xoá voucher.']);
+    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID voucher.']);
+
+    $st=$pdo->prepare("SELECT $VC_CODE FROM voucher WHERE $VC_ID=? LIMIT 1");
+    $st->execute([$id]);
+    $codeOld = (string)($st->fetchColumn() ?? '');
+
+    $pdo->prepare("DELETE FROM voucher WHERE $VC_ID=?")->execute([$id]);
+    $log('XOA_VOUCHER',"Xoá voucher #$id ($codeOld)",$id,['code'=>$codeOld]);
     redirectWith(['type'=>'ok','msg'=>'Đã xoá voucher.']);
   }
 
-  if ($action === 'bat_tat') {
-    if (!$isAdmin) redirectWith(['type'=>'error','msg'=>'Nhân viên không có quyền bật/tắt voucher.']);
-    if (!$V_STATUS) redirectWith(['type'=>'error','msg'=>'Bảng không có cột trạng_thái để bật/tắt.']);
-    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID.']);
+  if ($action==='test') {
+    // Dùng thử: nhập số tiền, trả về số tiền giảm (server tính) + log
+    if ($id<=0) redirectWith(['type'=>'error','msg'=>'Thiếu ID voucher.']);
+    $amount = (int)($_POST['amount'] ?? 0);
+    if ($amount<=0) redirectWith(['type'=>'error','msg'=>'Nhập số tiền cần thử.','xem'=>$id]);
 
-    $cur = $pdo->prepare("SELECT {$V_STATUS} AS st FROM {$voucherTable} WHERE {$V_ID}=? LIMIT 1");
-    $cur->execute([$id]);
-    $stNow = $cur->fetchColumn();
+    $st=$pdo->prepare("SELECT * FROM voucher WHERE $VC_ID=? LIMIT 1");
+    $st->execute([$id]);
+    $v = $st->fetch(PDO::FETCH_ASSOC);
+    if(!$v) redirectWith(['type'=>'error','msg'=>'Voucher không tồn tại.','xem'=>$id]);
 
-    // nếu numeric: đảo 0/1; nếu string: set 1/0
-    $new = (is_numeric($stNow) ? ((int)$stNow ? 0 : 1) : ((string)$stNow === '1' ? '0' : '1'));
-    $pdo->prepare("UPDATE {$voucherTable} SET {$V_STATUS}=? WHERE {$V_ID}=?")->execute([$new,$id]);
+    $vType = $VC_TYPE ? (string)($v[$VC_TYPE] ?? 'percent') : 'percent';
+    $vVal  = $VC_VALUE? (int)($v[$VC_VALUE] ?? 0) : 0;
+    $vMax  = ($VC_MAX && isset($v[$VC_MAX]) && $v[$VC_MAX]!==null && $v[$VC_MAX]!=='') ? (int)$v[$VC_MAX] : null;
 
-    redirectWith(['type'=>'ok','msg'=>'Đã cập nhật trạng thái voucher.']);
+    $discount = 0;
+    if (strtolower($vType)==='percent') {
+      $discount = (int)floor($amount * ($vVal/100));
+      if ($vMax!==null) $discount = min($discount,$vMax);
+    } else {
+      $discount = min($amount, $vVal);
+    }
+
+    $codeNow = $VC_CODE ? (string)($v[$VC_CODE] ?? '') : '';
+    $log('DUNG_THU_VOUCHER',"Dùng thử voucher #$id ($codeNow) trên ".money_vnd($amount)." => giảm ".money_vnd($discount),$id,[
+      'amount'=>$amount,'discount'=>$discount,'type'=>$vType,'value'=>$vVal,'max'=>$vMax
+    ]);
+
+    redirectWith(['type'=>'ok','msg'=>"Dùng thử: ".money_vnd($amount)." giảm ".money_vnd($discount),'xem'=>$id]);
   }
 
   redirectWith(['type'=>'error','msg'=>'Action không hợp lệ.']);
 }
 
-/* ================= Filters ================= */
+/* ================= FILTER / LIST ================= */
 $q = trim($_GET['q'] ?? '');
 $page = max(1,(int)($_GET['page'] ?? 1));
-$perPage = 12;
+$perPage = 10;
 $offset = ($page-1)*$perPage;
 
 $where = " WHERE 1 ";
 $params = [];
 
-if ($q !== '') {
-  $conds = [];
-  $conds[] = "{$V_CODE} LIKE ?";
-  $params[] = "%{$q}%";
-  if ($V_NAME){ $conds[] = "{$V_NAME} LIKE ?"; $params[] = "%{$q}%"; }
-  if ($V_DESC){ $conds[] = "{$V_DESC} LIKE ?"; $params[] = "%{$q}%"; }
-  $where .= " AND (".implode(" OR ",$conds).") ";
+if ($q!=='') {
+  $where .= " AND ($VC_CODE LIKE ?) ";
+  $params[] = "%$q%";
 }
 
-$orderBy = $V_CREATE ? $V_CREATE : $V_ID;
-
-/* count */
-$st = $pdo->prepare("SELECT COUNT(*) FROM {$voucherTable} {$where}");
+$st=$pdo->prepare("SELECT COUNT(*) FROM voucher $where");
 $st->execute($params);
-$total = (int)$st->fetchColumn();
-$totalPages = max(1,(int)ceil($total/$perPage));
+$total=(int)$st->fetchColumn();
+$totalPages=max(1,(int)ceil($total/$perPage));
 
-/* list fields */
-$fields = ["{$V_ID} AS id", "{$V_CODE} AS ma"];
-if ($V_NAME) $fields[]="{$V_NAME} AS ten";
-if ($V_DESC) $fields[]="{$V_DESC} AS mo_ta";
-if ($V_TYPE) $fields[]="{$V_TYPE} AS loai";
-if ($V_VALUE) $fields[]="{$V_VALUE} AS gia_tri";
-if ($V_MIN) $fields[]="{$V_MIN} AS don_toi_thieu";
-if ($V_MAX) $fields[]="{$V_MAX} AS giam_toi_da";
-if ($V_LIMIT) $fields[]="{$V_LIMIT} AS gioi_han";
-if ($V_USED) $fields[]="{$V_USED} AS da_dung";
-if ($V_START) $fields[]="{$V_START} AS ngay_bat_dau";
-if ($V_END) $fields[]="{$V_END} AS ngay_ket_thuc";
-if ($V_STATUS) $fields[]="{$V_STATUS} AS trang_thai";
-if ($V_CREATE) $fields[]="{$V_CREATE} AS ngay_tao";
+$fields = ["$VC_ID AS id", "$VC_CODE AS code"];
+if ($VC_TYPE)   $fields[] = "$VC_TYPE AS type";
+if ($VC_VALUE)  $fields[] = "$VC_VALUE AS value";
+if ($VC_MAX)    $fields[] = "$VC_MAX AS max_discount";
+if ($VC_START)  $fields[] = "$VC_START AS start_date";
+if ($VC_END)    $fields[] = "$VC_END AS end_date";
+if ($VC_ACTIVE) $fields[] = "$VC_ACTIVE AS is_active";
+if ($VC_LIMIT)  $fields[] = "$VC_LIMIT AS max_use";
+if ($VC_USED)   $fields[] = "$VC_USED AS used_count";
+if ($VC_UPDATED)$fields[] = "$VC_UPDATED AS updated_at";
 
-$sql = "SELECT ".implode(", ",$fields)." FROM {$voucherTable} {$where} ORDER BY {$orderBy} DESC LIMIT {$perPage} OFFSET {$offset}";
-$st = $pdo->prepare($sql);
+$orderBy = $VC_UPDATED ? $VC_UPDATED : $VC_ID;
+$sql = "SELECT ".implode(', ',$fields)." FROM voucher $where ORDER BY $orderBy DESC LIMIT $perPage OFFSET $offset";
+$st=$pdo->prepare($sql);
 $st->execute($params);
-$rows = $st->fetchAll(PDO::FETCH_ASSOC);
+$rows=$st->fetchAll(PDO::FETCH_ASSOC);
 
-/* stats thật */
-$statTotal = $total;
-$statActive = 0; $statExpired = 0; $statUsedUp = 0;
-
-$now = date('Y-m-d H:i:s');
-foreach($rows as $r){
-  // active: nếu có trạng thái numeric/string
-  $active = true;
-  if ($V_STATUS && isset($r['trang_thai'])) {
-    $active = is_numeric($r['trang_thai']) ? ((int)$r['trang_thai']===1) : ((string)$r['trang_thai']!=='0');
-  }
-  if ($V_END && !empty($r['ngay_ket_thuc']) && $r['ngay_ket_thuc'] < $now) $active = false;
-  if ($active) $statActive++;
-
-  if ($V_END && !empty($r['ngay_ket_thuc']) && $r['ngay_ket_thuc'] < $now) $statExpired++;
-
-  if ($V_LIMIT && $V_USED && isset($r['gioi_han']) && isset($r['da_dung']) && is_numeric($r['gioi_han']) && is_numeric($r['da_dung'])) {
-    if ((int)$r['gioi_han']>0 && (int)$r['da_dung'] >= (int)$r['gioi_han']) $statUsedUp++;
+/* usage count from donhang by ma_voucher (1 query) */
+$usedMap = [];
+if ($DH_VC && $rows) {
+  $codes = array_values(array_filter(array_map(fn($r)=>$r['code'] ?? null, $rows)));
+  if ($codes) {
+    $in = implode(',', array_fill(0,count($codes),'?'));
+    $qUsed = "SELECT $DH_VC AS code, COUNT(*) AS c FROM donhang WHERE $DH_VC IN ($in) GROUP BY $DH_VC";
+    $st = $pdo->prepare($qUsed);
+    $st->execute($codes);
+    foreach($st->fetchAll(PDO::FETCH_ASSOC) as $u){
+      $usedMap[(string)$u['code']] = (int)$u['c'];
+    }
   }
 }
 
-/* detail/edit */
+/* view edit */
 $viewId = (int)($_GET['xem'] ?? 0);
-$edit = null;
+$view = null;
 if ($viewId>0){
-  $st = $pdo->prepare("SELECT * FROM {$voucherTable} WHERE {$V_ID}=? LIMIT 1");
+  $st=$pdo->prepare("SELECT * FROM voucher WHERE $VC_ID=? LIMIT 1");
   $st->execute([$viewId]);
-  $edit = $st->fetch(PDO::FETCH_ASSOC);
+  $view=$st->fetch(PDO::FETCH_ASSOC);
+}
+
+/* stats (trong trang để giống ảnh) */
+$today = date('Y-m-d');
+$totalInPage = count($rows);
+$activeInPage = 0;
+$expiredInPage = 0;
+$usedUpInPage = 0;
+
+foreach($rows as $r){
+  $isActive = $VC_ACTIVE ? ((int)($r['is_active'] ?? 1) === 1) : true;
+  $sd = $r['start_date'] ?? null;
+  $ed = $r['end_date'] ?? null;
+
+  $inRange = true;
+  if ($sd && $sd > $today) $inRange = false;
+  if ($ed && $ed < $today) $inRange = false;
+
+  $isExpired = ($ed && $ed < $today);
+  if ($isExpired) $expiredInPage++;
+
+  if ($isActive && $inRange) $activeInPage++;
+
+  // used-up nếu có limit + used
+  $limit = isset($r['max_use']) ? (int)$r['max_use'] : null;
+  $used  = null;
+
+  if ($VC_USED && isset($r['used_count']) && $r['used_count']!==null && $r['used_count']!=='') {
+    $used = (int)$r['used_count'];
+  } elseif ($DH_VC) {
+    $used = (int)($usedMap[(string)($r['code'] ?? '')] ?? 0);
+  }
+
+  if ($limit && $used!==null && $used >= $limit) $usedUpInPage++;
 }
 
 /* flash */
-$type = $_GET['type'] ?? '';
-$msg  = $_GET['msg'] ?? '';
+$type=$_GET['type'] ?? '';
+$msg=$_GET['msg'] ?? '';
 
-/* đường dẫn “Dùng thử” (mở trang giỏ hàng phía user với voucher) */
-$DUONG_DUNGTHU = '../gio_hang.php?voucher='; // nếu file giỏ hàng bạn nằm chỗ khác, sửa ở đây
+/* ================= RENDER (layout) ================= */
+require_once __DIR__ . '/includes/giaoDienDau.php';
+require_once __DIR__ . '/includes/thanhBen.php';
+require_once __DIR__ . '/includes/thanhTren.php';
 ?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Admin - Voucher</title>
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<script>
-tailwind.config = {
-  theme:{extend:{
-    colors:{primary:"#137fec","background-light":"#f8f9fa",success:"#10b981",warning:"#f59e0b",danger:"#ef4444"},
-    fontFamily:{display:["Manrope","sans-serif"]},
-    boxShadow:{soft:"0 4px 20px -2px rgba(0,0,0,.05)"}
-  }}
-}
-</script>
-<style>
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
-</style>
-</head>
+<div class="p-4 md:p-8">
+  <div class="max-w-7xl mx-auto space-y-6">
 
-<body class="font-display bg-background-light text-slate-800 h-screen overflow-hidden flex">
-
-<!-- SIDEBAR -->
-<aside class="w-20 lg:w-64 bg-white border-r border-gray-200 hidden md:flex flex-col h-full flex-shrink-0">
-  <div class="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b border-gray-100">
-    <div class="size-8 rounded bg-primary flex items-center justify-center text-white font-bold text-xl">C</div>
-    <span class="ml-3 font-bold text-lg hidden lg:block text-slate-900">Crocs Admin</span>
-  </div>
-
-  <nav class="flex-1 overflow-y-auto py-6 px-3 flex flex-col gap-2">
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="index.php">
-      <span class="material-symbols-outlined group-hover:text-primary">grid_view</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Tổng quan</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="sanpham.php">
-      <span class="material-symbols-outlined group-hover:text-primary">inventory_2</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Sản phẩm</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="donhang.php">
-      <span class="material-symbols-outlined group-hover:text-primary">shopping_bag</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Đơn hàng</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="khachhang.php">
-      <span class="material-symbols-outlined group-hover:text-primary">groups</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Khách hàng</span>
-    </a>
-
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl bg-primary text-white shadow-soft" href="voucher.php">
-      <span class="material-symbols-outlined">sell</span>
-      <span class="text-sm font-bold hidden lg:block">Voucher</span>
-    </a>
-
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="baocao.php">
-      <span class="material-symbols-outlined group-hover:text-primary">bar_chart</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Báo cáo</span>
-    </a>
-
-    <?php if($isAdmin): ?>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="nhanvien.php">
-      <span class="material-symbols-outlined group-hover:text-primary">badge</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Nhân viên</span>
-    </a>
-    <?php endif; ?>
-
-    <div class="mt-auto pt-6 border-t border-gray-100">
-      <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="dang_xuat.php">
-        <span class="material-symbols-outlined group-hover:text-primary">logout</span>
-        <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Đăng xuất</span>
-      </a>
-    </div>
-  </nav>
-</aside>
-
-<!-- MAIN -->
-<main class="flex-1 flex flex-col h-full overflow-hidden">
-
-  <!-- TOPBAR -->
-  <header class="bg-white/80 backdrop-blur-md border-b border-gray-200 h-16 flex items-center justify-between px-6 sticky top-0 z-20">
-    <h2 class="text-xl font-bold hidden sm:block">Quản lý Voucher</h2>
-
-    <div class="flex items-center gap-3">
-      <form class="hidden sm:block relative" method="get" action="voucher.php">
-        <span class="material-symbols-outlined absolute left-3 top-2.5 text-gray-400 text-[20px]">search</span>
-        <input name="q" value="<?= h($q) ?>"
-          class="pl-10 pr-4 py-2 bg-gray-100 border-none rounded-lg text-sm w-80 focus:ring-2 focus:ring-primary/50"
-          placeholder="Tìm mã / tên voucher..." />
-      </form>
-
-      <div class="text-xs px-3 py-1 rounded-full bg-gray-100 text-slate-600 font-bold">
-        <?= $isAdmin ? 'ADMIN' : 'NHÂN VIÊN' ?>
-      </div>
-    </div>
-  </header>
-
-  <div class="flex-1 overflow-y-auto p-4 md:p-8">
-    <div class="max-w-7xl mx-auto flex flex-col gap-6">
-
-      <?php if($msg): ?>
-      <div class="p-4 rounded-2xl border shadow-soft bg-white <?= $type==='ok'?'border-green-200':($type==='error'?'border-red-200':'border-gray-200') ?>">
-        <div class="flex gap-2 items-start">
+    <?php if($msg): ?>
+      <div class="bg-white rounded-2xl border border-line shadow-card p-4">
+        <div class="flex items-start gap-2">
           <span class="material-symbols-outlined <?= $type==='ok'?'text-green-600':($type==='error'?'text-red-600':'text-slate-600') ?>">
             <?= $type==='ok'?'check_circle':($type==='error'?'error':'info') ?>
           </span>
-          <div class="text-sm font-semibold"><?= h($msg) ?></div>
+          <div class="text-sm font-bold"><?= h($msg) ?></div>
         </div>
       </div>
-      <?php endif; ?>
+    <?php endif; ?>
 
-      <!-- STATS -->
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div class="bg-white p-5 rounded-2xl shadow-soft border border-gray-100">
-          <div class="p-3 bg-blue-50 rounded-xl text-primary w-fit"><span class="material-symbols-outlined">sell</span></div>
-          <div class="mt-3 text-slate-500 text-sm font-medium">Tổng voucher</div>
-          <div class="text-2xl font-extrabold"><?= number_format($statTotal) ?></div>
-        </div>
-        <div class="bg-white p-5 rounded-2xl shadow-soft border border-gray-100">
-          <div class="p-3 bg-green-50 rounded-xl text-green-700 w-fit"><span class="material-symbols-outlined">check_circle</span></div>
-          <div class="mt-3 text-slate-500 text-sm font-medium">Đang hoạt động</div>
-          <div class="text-2xl font-extrabold"><?= number_format($statActive) ?></div>
-        </div>
-        <div class="bg-white p-5 rounded-2xl shadow-soft border border-gray-100">
-          <div class="p-3 bg-yellow-50 rounded-xl text-yellow-700 w-fit"><span class="material-symbols-outlined">event_busy</span></div>
-          <div class="mt-3 text-slate-500 text-sm font-medium">Hết hạn (trong trang)</div>
-          <div class="text-2xl font-extrabold"><?= number_format($statExpired) ?></div>
-        </div>
-        <div class="bg-white p-5 rounded-2xl shadow-soft border border-gray-100">
-          <div class="p-3 bg-red-50 rounded-xl text-red-700 w-fit"><span class="material-symbols-outlined">block</span></div>
-          <div class="mt-3 text-slate-500 text-sm font-medium">Đã dùng hết lượt (trong trang)</div>
-          <div class="text-2xl font-extrabold"><?= number_format($statUsedUp) ?></div>
+    <!-- KPI -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center gap-3">
+          <div class="size-12 rounded-2xl bg-blue-50 grid place-items-center">
+            <span class="material-symbols-outlined text-primary">sell</span>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-bold">Tổng voucher</div>
+            <div class="text-xl font-extrabold"><?= number_format($total) ?></div>
+          </div>
         </div>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center gap-3">
+          <div class="size-12 rounded-2xl bg-green-50 grid place-items-center">
+            <span class="material-symbols-outlined text-green-600">verified</span>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-bold">Đang hoạt động</div>
+            <div class="text-xl font-extrabold"><?= number_format($activeInPage) ?></div>
+          </div>
+        </div>
+      </div>
 
-        <!-- LIST -->
-        <div class="lg:col-span-2 bg-white p-4 md:p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex items-center justify-between mb-4">
-            <div class="text-sm font-extrabold">Danh sách voucher</div>
-            <div class="text-xs text-slate-500">Bảng: <b><?= h($voucherTable) ?></b></div>
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center gap-3">
+          <div class="size-12 rounded-2xl bg-amber-50 grid place-items-center">
+            <span class="material-symbols-outlined text-amber-600">event_busy</span>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-bold">Hết hạn (trong trang)</div>
+            <div class="text-xl font-extrabold"><?= number_format($expiredInPage) ?></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center gap-3">
+          <div class="size-12 rounded-2xl bg-red-50 grid place-items-center">
+            <span class="material-symbols-outlined text-red-600">block</span>
+          </div>
+          <div>
+            <div class="text-xs text-muted font-bold">Đã dùng hết lượt (trong trang)</div>
+            <div class="text-xl font-extrabold"><?= number_format($usedUpInPage) ?></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- LIST -->
+      <div class="lg:col-span-2 bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-base font-extrabold">Danh sách voucher</div>
+            <div class="text-xs text-muted font-bold">Bảng: voucher</div>
           </div>
 
-          <div class="overflow-x-auto">
-            <table class="min-w-full text-sm">
-              <thead>
-                <tr class="text-left text-slate-500 border-b">
-                  <th class="py-3 pr-3">Mã</th>
-                  <th class="py-3 pr-3">Giảm</th>
-                  <th class="py-3 pr-3">Thời gian</th>
-                  <th class="py-3 pr-3">Trạng thái</th>
-                  <th class="py-3 pr-3">Dùng</th>
-                  <th class="py-3 text-right">Hành động</th>
-                </tr>
-              </thead>
-              <tbody>
+          <form method="get" class="flex items-center gap-2">
+            <div class="relative">
+              <span class="material-symbols-outlined absolute left-3 top-2.5 text-slate-400 text-[20px]">search</span>
+              <input name="q" value="<?= h($q) ?>" class="pl-10 pr-3 py-2 rounded-xl bg-slate-50 border border-line text-sm w-56"
+                placeholder="Tìm mã / tên voucher..." />
+            </div>
+            <button class="px-3 py-2 rounded-xl bg-primary text-white text-sm font-extrabold">Lọc</button>
+          </form>
+        </div>
+
+        <div class="mt-4 overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="text-muted">
+                <th class="text-left py-3 pr-3 font-extrabold">Mã</th>
+                <th class="text-left py-3 pr-3 font-extrabold">Giảm</th>
+                <th class="text-left py-3 pr-3 font-extrabold">Thời gian</th>
+                <th class="text-left py-3 pr-3 font-extrabold">Trạng thái</th>
+                <th class="text-left py-3 pr-3 font-extrabold">Dùng</th>
+                <th class="text-right py-3 pr-0 font-extrabold">Hành động</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-line">
               <?php if(!$rows): ?>
-                <tr><td colspan="10" class="py-8 text-center text-slate-500">Không có voucher.</td></tr>
+                <tr><td colspan="6" class="py-10 text-center text-muted font-bold">Chưa có voucher.</td></tr>
               <?php endif; ?>
 
-              <?php foreach($rows as $r): ?>
-                <?php
-                  $id = (int)$r['id'];
-                  $active = true;
-                  if ($V_STATUS && isset($r['trang_thai'])) $active = is_numeric($r['trang_thai']) ? ((int)$r['trang_thai']===1) : ((string)$r['trang_thai']!=='0');
-                  if ($V_END && !empty($r['ngay_ket_thuc']) && $r['ngay_ket_thuc'] < date('Y-m-d H:i:s')) $active=false;
+              <?php foreach($rows as $r):
+                $code = (string)($r['code'] ?? '');
+                $type = strtolower((string)($r['type'] ?? 'percent'));
+                $value= (int)($r['value'] ?? 0);
+                $maxd = isset($r['max_discount']) && $r['max_discount']!==null && $r['max_discount']!=='' ? (int)$r['max_discount'] : null;
 
-                  $badge = $active ? 'bg-green-50 text-green-700' : 'bg-slate-100 text-slate-700';
+                $sd = $r['start_date'] ?? null;
+                $ed = $r['end_date'] ?? null;
 
-                  $giam = '';
-                  if (isset($r['gia_tri'])) {
-                    $giam = number_format((int)$r['gia_tri']).' ₫';
-                    if (!empty($r['loai'])) {
-                      $loai = strtolower((string)$r['loai']);
-                      if (strpos($loai,'phan')!==false || strpos($loai,'%')!==false || $loai==='percent') $giam = (int)$r['gia_tri'].'%';
-                    }
-                  }
+                $isActive = $VC_ACTIVE ? ((int)($r['is_active'] ?? 1) === 1) : true;
+                $expired = ($ed && $ed < $today);
+                $inRange = true;
+                if ($sd && $sd > $today) $inRange = false;
+                if ($ed && $ed < $today) $inRange = false;
 
-                  $time = '';
-                  if (!empty($r['ngay_bat_dau']) || !empty($r['ngay_ket_thuc'])) {
-                    $time = trim(($r['ngay_bat_dau'] ?? '').' → '.($r['ngay_ket_thuc'] ?? ''));
-                  }
-                  $usedText = '';
-                  if (isset($r['da_dung']) || isset($r['gioi_han'])) {
-                    $usedText = (int)($r['da_dung'] ?? 0).' / '.(int)($r['gioi_han'] ?? 0);
-                  }
-                ?>
-                <tr class="border-b last:border-0 hover:bg-gray-50 <?= ($viewId===$id)?'bg-blue-50/40':'' ?>">
-                  <td class="py-3 pr-3">
-                    <div class="font-extrabold text-slate-900"><?= h($r['ma']) ?></div>
-                    <div class="text-xs text-slate-500"><?= h($r['ten'] ?? '') ?></div>
+                $badge = ['bg'=>'bg-slate-100','tx'=>'text-slate-700','label'=>'Tắt'];
+                if ($expired) $badge = ['bg'=>'bg-red-50','tx'=>'text-red-600','label'=>'Hết hạn'];
+                else if ($isActive && $inRange) $badge = ['bg'=>'bg-green-50','tx'=>'text-green-600','label'=>'Hoạt động'];
+                else if ($isActive && !$inRange) $badge = ['bg'=>'bg-amber-50','tx'=>'text-amber-700','label'=>'Chưa tới'];
+
+                $used = null;
+                if ($VC_USED && isset($r['used_count']) && $r['used_count']!==null && $r['used_count']!=='') $used = (int)$r['used_count'];
+                elseif ($DH_VC) $used = (int)($usedMap[$code] ?? 0);
+
+                $limit = isset($r['max_use']) ? (int)$r['max_use'] : null;
+
+                $discountLabel = ($type==='percent') ? ($value.'%') : money_vnd($value);
+                if ($type==='percent' && $maxd!==null) $discountLabel .= ' (tối đa '.money_vnd($maxd).')';
+              ?>
+                <tr class="align-top">
+                  <td class="py-4 pr-3">
+                    <div class="font-extrabold"><?= h($code) ?></div>
+                    <div class="text-xs text-muted font-bold">ID: <?= (int)$r['id'] ?></div>
                   </td>
-
-                  <td class="py-3 pr-3 font-extrabold text-slate-900"><?= h($giam) ?></td>
-
-                  <td class="py-3 pr-3 text-slate-600">
-                    <?= $time ? h($time) : '—' ?>
-                    <?php if(!empty($r['don_toi_thieu'])): ?>
-                      <div class="text-xs text-slate-500">Tối thiểu: <b><?= number_format((int)$r['don_toi_thieu']) ?> ₫</b></div>
-                    <?php endif; ?>
+                  <td class="py-4 pr-3 font-bold"><?= h($discountLabel) ?></td>
+                  <td class="py-4 pr-3 text-muted font-bold">
+                    <?= h($sd ?: '—') ?> — <?= h($ed ?: '—') ?>
                   </td>
-
-                  <td class="py-3 pr-3">
-                    <span class="inline-flex px-2 py-1 rounded-full text-[11px] font-extrabold <?= $badge ?>">
-                      <?= $active ? 'Hoạt động' : 'Tạm tắt / Hết hạn' ?>
+                  <td class="py-4 pr-3">
+                    <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $badge['bg'] ?> <?= $badge['tx'] ?>">
+                      <?= h($badge['label']) ?>
                     </span>
                   </td>
-
-                  <td class="py-3 pr-3 text-slate-700 font-bold"><?= $usedText ?: '—' ?></td>
-
-                  <td class="py-3 text-right">
-                    <div class="flex justify-end gap-2">
-                      <a class="px-3 py-2 rounded-xl bg-blue-50 text-primary font-extrabold hover:bg-blue-100 text-xs"
-                         href="voucher.php?<?= h(http_build_query(array_merge($_GET,['xem'=>$id]))) ?>">Sửa</a>
-
-                      <a class="px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-extrabold hover:bg-slate-200 text-xs"
-                         target="_blank"
-                         href="<?= h($DUONG_DUNGTHU.urlencode($r['ma'])) ?>">Dùng thử</a>
-
-                      <?php if($isAdmin && $V_STATUS): ?>
-                        <form method="post">
-                          <input type="hidden" name="action" value="bat_tat">
-                          <input type="hidden" name="id" value="<?= $id ?>">
-                          <button class="px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-extrabold hover:bg-slate-200 text-xs">
-                            Bật/Tắt
-                          </button>
-                        </form>
+                  <td class="py-4 pr-3">
+                    <?php if($used===null): ?>
+                      <span class="text-muted font-bold">—</span>
+                    <?php else: ?>
+                      <span class="font-extrabold"><?= number_format($used) ?></span>
+                      <?php if($limit): ?>
+                        <span class="text-muted font-bold">/ <?= number_format($limit) ?></span>
                       <?php endif; ?>
+                    <?php endif; ?>
+                  </td>
+                  <td class="py-4 pr-0">
+                    <div class="flex items-center justify-end gap-2">
+                      <a class="px-3 py-2 rounded-xl bg-slate-100 text-slate-800 text-xs font-extrabold hover:bg-slate-200"
+                         href="voucher.php?<?= h(http_build_query(array_merge($_GET,['xem'=>(int)$r['id']])) ) ?>">Sửa</a>
+
+                      <button type="button"
+                        class="px-3 py-2 rounded-xl bg-slate-100 text-slate-800 text-xs font-extrabold hover:bg-slate-200"
+                        onclick="testVoucher(<?= (int)$r['id'] ?>)">Dùng thử</button>
+
+                      <form method="post" class="inline">
+                        <input type="hidden" name="action" value="toggle">
+                        <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                        <button class="px-3 py-2 rounded-xl bg-slate-100 text-slate-800 text-xs font-extrabold hover:bg-slate-200">
+                          <?= ($isActive? 'Tắt' : 'Bật') ?>
+                        </button>
+                      </form>
                     </div>
                   </td>
                 </tr>
               <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
+            </tbody>
+          </table>
+        </div>
 
-          <!-- PAGINATION -->
-          <div class="flex items-center justify-between mt-4">
-            <div class="text-xs text-slate-500">Trang <?= $page ?>/<?= $totalPages ?> • Tổng <?= number_format($total) ?></div>
-            <div class="flex gap-2">
-              <?php
+        <!-- pagination -->
+        <div class="mt-4 flex items-center justify-between">
+          <div class="text-xs text-muted font-bold">Trang <?= $page ?>/<?= $totalPages ?> · Tổng <?= number_format($total) ?></div>
+          <div class="flex gap-2">
+            <?php
               $qs=$_GET;
               $mk=function($p) use($qs){ $qs['page']=$p; return 'voucher.php?'.http_build_query($qs); };
-              ?>
-              <a class="px-3 py-2 rounded-xl border bg-white text-sm font-bold <?= $page<=1?'opacity-40 pointer-events-none':'' ?>"
-                 href="<?= h($mk(max(1,$page-1))) ?>">Trước</a>
-              <a class="px-3 py-2 rounded-xl border bg-white text-sm font-bold <?= $page>=$totalPages?'opacity-40 pointer-events-none':'' ?>"
-                 href="<?= h($mk(min($totalPages,$page+1))) ?>">Sau</a>
-            </div>
+            ?>
+            <a class="px-3 py-2 rounded-xl border border-line bg-white text-sm font-extrabold <?= $page<=1?'opacity-40 pointer-events-none':'' ?>"
+               href="<?= h($mk(max(1,$page-1))) ?>">Trước</a>
+            <a class="px-3 py-2 rounded-xl border border-line bg-white text-sm font-extrabold <?= $page>=$totalPages?'opacity-40 pointer-events-none':'' ?>"
+               href="<?= h($mk(min($totalPages,$page+1))) ?>">Sau</a>
           </div>
         </div>
+      </div>
 
-        <!-- FORM -->
-        <div class="bg-white p-4 md:p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <div class="text-lg font-extrabold"><?= $edit ? 'Sửa voucher' : 'Thêm voucher' ?></div>
-              <div class="text-xs text-slate-500"><?= $isAdmin ? 'Bạn có quyền CRUD' : 'Nhân viên chỉ xem' ?></div>
-            </div>
-            <?php if($edit): ?>
-              <a class="text-sm font-extrabold text-primary hover:underline" href="voucher.php">Bỏ chọn</a>
-            <?php endif; ?>
+      <!-- FORM -->
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="text-base font-extrabold"><?= $view ? 'Sửa voucher' : 'Thêm voucher' ?></div>
+            <div class="text-xs text-muted font-bold"><?= $isAdmin ? 'Bạn có quyền CRUD' : 'Nhân viên: chỉ xem / dùng thử' ?></div>
           </div>
-
-          <?php if(!$isAdmin): ?>
-            <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm text-slate-600">
-              Nhân viên không được thêm/sửa/xoá voucher.
-            </div>
-          <?php else: ?>
-            <form method="post" class="space-y-3" onsubmit="return true;">
-              <input type="hidden" name="action" value="<?= $edit?'sua':'them' ?>">
-              <?php if($edit): ?><input type="hidden" name="id" value="<?= (int)$viewId ?>"><?php endif; ?>
-
-              <div>
-                <label class="text-sm font-bold">Mã voucher</label>
-                <input name="ma" required
-                  value="<?= $edit ? h($edit[$V_CODE] ?? '') : '' ?>"
-                  class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                  placeholder="VD: CROCS10, FREESHIP...">
-              </div>
-
-              <?php if($V_NAME): ?>
-              <div>
-                <label class="text-sm font-bold">Tên voucher</label>
-                <input name="ten"
-                  value="<?= $edit ? h($edit[$V_NAME] ?? '') : '' ?>"
-                  class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                  placeholder="VD: Giảm 10% đơn hàng">
-              </div>
-              <?php endif; ?>
-
-              <?php if($V_DESC): ?>
-              <div>
-                <label class="text-sm font-bold">Mô tả</label>
-                <textarea name="mo_ta" rows="3" class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                  placeholder="Điều kiện áp dụng..."><?= $edit ? h($edit[$V_DESC] ?? '') : '' ?></textarea>
-              </div>
-              <?php endif; ?>
-
-              <div class="grid grid-cols-2 gap-3">
-                <?php if($V_TYPE): ?>
-                <div>
-                  <label class="text-sm font-bold">Loại</label>
-                  <select name="loai" class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50">
-                    <?php
-                      $curType = $edit ? (string)($edit[$V_TYPE] ?? '') : '';
-                      $opts = array_unique(array_filter([$curType,'percent','fixed','%','phan_tram','tien_mat']));
-                      if (!$opts) $opts = ['percent','fixed'];
-                      foreach($opts as $op):
-                    ?>
-                      <option value="<?= h($op) ?>" <?= ($curType===$op)?'selected':'' ?>><?= h($op) ?></option>
-                    <?php endforeach; ?>
-                  </select>
-                </div>
-                <?php endif; ?>
-
-                <?php if($V_VALUE): ?>
-                <div>
-                  <label class="text-sm font-bold">Giá trị giảm</label>
-                  <input name="gia_tri"
-                    value="<?= $edit ? h($edit[$V_VALUE] ?? '') : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                    placeholder="VD: 10 hoặc 50000">
-                </div>
-                <?php endif; ?>
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                <?php if($V_MIN): ?>
-                <div>
-                  <label class="text-sm font-bold">Đơn tối thiểu</label>
-                  <input name="don_toi_thieu"
-                    value="<?= $edit ? h($edit[$V_MIN] ?? '') : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                    placeholder="VD: 200000">
-                </div>
-                <?php endif; ?>
-
-                <?php if($V_MAX): ?>
-                <div>
-                  <label class="text-sm font-bold">Giảm tối đa</label>
-                  <input name="giam_toi_da"
-                    value="<?= $edit ? h($edit[$V_MAX] ?? '') : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                    placeholder="VD: 50000">
-                </div>
-                <?php endif; ?>
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                <?php if($V_LIMIT): ?>
-                <div>
-                  <label class="text-sm font-bold">Giới hạn lượt</label>
-                  <input name="gioi_han"
-                    value="<?= $edit ? h($edit[$V_LIMIT] ?? '') : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50"
-                    placeholder="VD: 100">
-                </div>
-                <?php endif; ?>
-
-                <?php if($V_STATUS): ?>
-                <div>
-                  <label class="text-sm font-bold">Trạng thái</label>
-                  <select name="trang_thai" class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50">
-                    <?php
-                      $cur = $edit ? (string)($edit[$V_STATUS] ?? '1') : '1';
-                    ?>
-                    <option value="1" <?= $cur==='1'?'selected':'' ?>>Bật</option>
-                    <option value="0" <?= $cur==='0'?'selected':'' ?>>Tắt</option>
-                  </select>
-                </div>
-                <?php endif; ?>
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                <?php if($V_START): ?>
-                <div>
-                  <label class="text-sm font-bold">Ngày bắt đầu</label>
-                  <input name="ngay_bat_dau" type="datetime-local"
-                    value="<?= $edit ? h(str_replace(' ','T', (string)($edit[$V_START] ?? ''))) : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50">
-                </div>
-                <?php endif; ?>
-                <?php if($V_END): ?>
-                <div>
-                  <label class="text-sm font-bold">Ngày kết thúc</label>
-                  <input name="ngay_ket_thuc" type="datetime-local"
-                    value="<?= $edit ? h(str_replace(' ','T', (string)($edit[$V_END] ?? ''))) : '' ?>"
-                    class="mt-1 w-full rounded-xl border-gray-200 bg-gray-50">
-                </div>
-                <?php endif; ?>
-              </div>
-
-              <button class="w-full px-4 py-3 rounded-2xl bg-primary text-white font-extrabold hover:opacity-90">
-                <?= $edit ? 'Lưu thay đổi' : 'Thêm voucher' ?>
-              </button>
-
-              <?php if($edit): ?>
-              <div class="grid grid-cols-2 gap-2">
-                <a class="w-full text-center px-4 py-3 rounded-2xl bg-slate-100 text-slate-700 font-extrabold hover:bg-slate-200"
-                   target="_blank" href="<?= h($DUONG_DUNGTHU.urlencode($edit[$V_CODE] ?? '')) ?>">Dùng thử</a>
-
-                <form method="post" onsubmit="return confirm('Xóa voucher này?');">
-                  <input type="hidden" name="action" value="xoa">
-                  <input type="hidden" name="id" value="<?= (int)$viewId ?>">
-                  <button class="w-full px-4 py-3 rounded-2xl bg-red-600 text-white font-extrabold hover:bg-red-700">
-                    Xóa
-                  </button>
-                </form>
-              </div>
-              <?php endif; ?>
-            </form>
+          <?php if($view): ?>
+            <a class="text-sm font-extrabold text-primary hover:underline" href="voucher.php">Bỏ chọn</a>
           <?php endif; ?>
         </div>
+
+        <form method="post" class="mt-4 space-y-3">
+          <input type="hidden" name="action" value="<?= $view?'sua':'them' ?>">
+          <?php if($view): ?><input type="hidden" name="id" value="<?= (int)$viewId ?>"><?php endif; ?>
+
+          <?php
+            $curCode = $view ? (string)($view[$VC_CODE] ?? '') : '';
+            $curType = $view && $VC_TYPE ? (string)($view[$VC_TYPE] ?? 'percent') : 'percent';
+            $curVal  = $view && $VC_VALUE ? (int)($view[$VC_VALUE] ?? 0) : 0;
+            $curMax  = $view && $VC_MAX ? (string)($view[$VC_MAX] ?? '') : '';
+            $curAct  = $view && $VC_ACTIVE ? (int)($view[$VC_ACTIVE] ?? 1) : 1;
+            $curS    = $view && $VC_START ? (string)($view[$VC_START] ?? '') : '';
+            $curE    = $view && $VC_END ? (string)($view[$VC_END] ?? '') : '';
+            $curL    = $view && $VC_LIMIT ? (string)($view[$VC_LIMIT] ?? '') : '';
+          ?>
+
+          <div>
+            <label class="text-sm font-bold">Mã voucher</label>
+            <input name="ma_voucher" value="<?= h($curCode) ?>" placeholder="VD: CROCS10, FREESHIP..." required
+              class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm font-bold">Loại</label>
+              <select name="loai" class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+                <option value="percent" <?= strtolower($curType)==='percent'?'selected':'' ?>>percent</option>
+                <option value="fixed" <?= strtolower($curType)==='fixed'?'selected':'' ?>>fixed</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-sm font-bold">Giá trị giảm</label>
+              <input name="gia_tri" type="number" value="<?= (int)$curVal ?>" placeholder="VD: 10 hoặc 50000" required
+                class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm font-bold">Giảm tối đa</label>
+              <input name="giam_toi_da" type="number" value="<?= h($curMax) ?>" placeholder="VD: 50000"
+                class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+              <div class="text-[11px] text-muted font-bold mt-1">Dùng cho percent (nếu có cột).</div>
+            </div>
+            <div>
+              <label class="text-sm font-bold">Giới hạn lượt dùng</label>
+              <input name="gioi_han" type="number" value="<?= h($curL) ?>" placeholder="VD: 100"
+                class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+              <div class="text-[11px] text-muted font-bold mt-1">Nếu bảng có cột giới hạn.</div>
+            </div>
+          </div>
+
+          <div>
+            <label class="text-sm font-bold">Trạng thái</label>
+            <select name="trang_thai" class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+              <option value="1" <?= $curAct===1?'selected':'' ?>>Bật</option>
+              <option value="0" <?= $curAct===0?'selected':'' ?>>Tắt</option>
+            </select>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm font-bold">Ngày bắt đầu</label>
+              <input name="ngay_bat_dau" type="date" value="<?= h($curS) ?>"
+                class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+            </div>
+            <div>
+              <label class="text-sm font-bold">Ngày kết thúc</label>
+              <input name="ngay_ket_thuc" type="date" value="<?= h($curE) ?>"
+                class="mt-1 w-full rounded-xl bg-slate-50 border border-line">
+            </div>
+          </div>
+
+          <button class="w-full py-3 rounded-2xl bg-primary text-white font-extrabold hover:opacity-90 <?= $isAdmin?'':'opacity-40 pointer-events-none' ?>">
+            <?= $view ? 'Lưu voucher' : 'Thêm voucher' ?>
+          </button>
+
+          <?php if(!$isAdmin): ?>
+            <div class="text-[12px] text-muted font-bold">Nhân viên không được thêm/sửa/xóa voucher.</div>
+          <?php endif; ?>
+        </form>
+
+        <?php if($view): ?>
+          <div class="mt-4 pt-4 border-t border-line space-y-3">
+            <div class="text-sm font-extrabold">Dùng thử nhanh</div>
+            <button type="button" class="w-full py-2 rounded-xl bg-slate-100 text-slate-800 text-sm font-extrabold hover:bg-slate-200"
+              onclick="testVoucher(<?= (int)$viewId ?>)">Nhập số tiền để thử</button>
+
+            <form method="post" onsubmit="return confirm('Xóa voucher này?');">
+              <input type="hidden" name="action" value="xoa">
+              <input type="hidden" name="id" value="<?= (int)$viewId ?>">
+              <button class="w-full py-2 rounded-xl bg-red-600 text-white text-sm font-extrabold hover:bg-red-700 <?= $isAdmin?'':'opacity-40 pointer-events-none' ?>">
+                Xóa voucher
+              </button>
+            </form>
+          </div>
+        <?php endif; ?>
 
       </div>
     </div>
   </div>
-</main>
-</body>
-</html>
+</div>
+
+<script>
+function testVoucher(id){
+  const v = prompt("Nhập số tiền để dùng thử voucher (VND):", "1000000");
+  if(!v) return;
+  const amount = parseInt(v,10);
+  if(!amount || amount<=0){ alert("Số tiền không hợp lệ"); return; }
+
+  const f = document.createElement('form');
+  f.method = 'post';
+  f.style.display='none';
+  f.innerHTML = `
+    <input name="action" value="test">
+    <input name="id" value="${id}">
+    <input name="amount" value="${amount}">
+  `;
+  document.body.appendChild(f);
+  f.submit();
+}
+</script>
+
+<?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; ?>

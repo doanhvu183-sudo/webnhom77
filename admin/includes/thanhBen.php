@@ -1,85 +1,118 @@
 <?php
-// admin/thanhben.php
-$ACTIVE = $ACTIVE ?? 'dashboard';
+// admin/includes/thanhBen.php
 
-function nav_item($href, $icon, $label, $key, $ACTIVE, ) {
-  $is = ($key === $ACTIVE);
-  $cls = $is
-    ? "bg-primary text-white shadow-soft"
-    : "text-slate-600 hover:bg-slate-100";
-  $iconCls = $is ? "text-white" : "text-slate-500 group-hover:text-primary";
-  echo '
-  <a href="'.$href.'" class="group flex items-center gap-3 px-3 py-3 rounded-xl transition-all '.$cls.'">
-    <span class="material-symbols-outlined '.$iconCls.'">'.$icon.'</span>
-    <span class="text-sm font-extrabold hidden lg:block">'.$label.'</span>
-  </a>';
+if (session_status() === PHP_SESSION_NONE) session_start();
+
+$ACTIVE   = $ACTIVE ?? 'tong_quan';
+$APP_NAME = $APP_NAME ?? 'Crocs Admin';
+
+$me = $_SESSION['admin'] ?? [];
+$role = strtoupper(trim((string)($me['vai_tro'] ?? $me['role'] ?? 'NHANVIEN')));
+$dept = strtoupper(trim((string)($me['bo_phan'] ?? $me['phong_ban'] ?? '')));
+
+// ✅ CHỈ tạo h() nếu chưa tồn tại
+if (!function_exists('h')) {
+  function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 }
 
-$shopName = get_setting($pdo, 'shop_name', 'Crocs Admin');
-$lowStock = (int)get_setting($pdo, 'low_stock_threshold', 5);
+/**
+ * Ma trận quyền theo vai trò / bộ phận (thăng cấp dần).
+ */
+if (!function_exists('can_access')) {
+  function can_access(string $key, string $role, string $dept=''): bool {
+    $role = strtoupper(trim($role));
+    $dept = strtoupper(trim($dept));
+
+    if ($role === 'ADMIN') return true;
+
+    $base = [
+      'tong_quan'   => true,
+      'sanpham'     => true,
+      'theodoi_gia' => true,
+      'donhang'     => true,
+      'khachhang'   => true,
+      'tonkho'      => true,
+      'voucher'     => true,
+      'baocao'      => false,
+      'nhatky'      => false,
+      'nhanvien'    => false,
+      'thongbao'    => true,
+      'caidat'      => false,
+    ];
+
+    if ($role === 'KETOAN' || $role === 'QUANLY') {
+      $base['baocao'] = true;
+      $base['nhatky'] = true;
+    }
+
+    if ($dept === 'KETOAN') {
+      $base['baocao'] = true;
+      $base['nhatky'] = true;
+    }
+    if ($dept === 'KHO') {
+      $base['tonkho'] = true;
+      $base['sanpham'] = true;
+    }
+    if ($dept === 'BANHANG') {
+      $base['donhang'] = true;
+      $base['khachhang'] = true;
+    }
+    if ($dept === 'CSKH') {
+      $base['khachhang'] = true;
+      $base['donhang'] = true;
+    }
+
+    return (bool)($base[$key] ?? false);
+  }
+}
+
+if (!function_exists('nav_item')) {
+  function nav_item(string $href, string $icon, string $label, string $key, string $ACTIVE): void {
+    $is = ($key === $ACTIVE);
+    $cls = $is
+      ? "bg-primary text-white shadow-soft"
+      : "text-slate-600 hover:bg-slate-100";
+    $iconCls = $is ? "text-white" : "text-slate-500 group-hover:text-primary";
+
+    echo '
+    <a href="'.h($href).'" class="group flex items-center gap-3 px-3 py-3 rounded-2xl transition-all '.$cls.'">
+      <span class="material-symbols-outlined '.$iconCls.'">'.$icon.'</span>
+      <span class="text-sm font-extrabold hidden lg:block">'.$label.'</span>
+    </a>';
+  }
+}
+
+$isAdmin = ($role === 'ADMIN');
 ?>
-<!-- SIDEBAR -->
-<aside class="w-20 lg:w-64 bg-white border-r border-gray-200 hidden md:flex flex-col h-screen sticky top-0">
-  <div class="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b border-gray-100">
-    <div class="size-8 rounded bg-primary flex items-center justify-center text-white font-extrabold text-xl">C</div>
-    <span class="ml-3 font-extrabold text-lg hidden lg:block"><?= h($shopName) ?></span>
+
+<!-- SIDEBAR DESKTOP -->
+<aside class="w-20 lg:w-64 bg-white border-r border-slate-200 hidden md:flex flex-col h-screen flex-shrink-0">
+  <div class="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b border-slate-100">
+    <div class="size-9 rounded-xl bg-primary flex items-center justify-center text-white font-extrabold text-xl">C</div>
+    <span class="ml-3 font-extrabold text-lg hidden lg:block text-slate-900"><?= h($APP_NAME) ?></span>
   </div>
 
-  <nav class="flex-1 overflow-y-auto py-6 px-3 flex flex-col gap-2">
-    <?php
-      nav_item("index.php", "grid_view", "Tổng quan", "dashboard", $ACTIVE);
-      nav_item("sanpham.php", "inventory_2", "Sản phẩm", "sanpham", $ACTIVE);
-      nav_item("donhang.php", "shopping_bag", "Đơn hàng", "donhang", $ACTIVE);
-      nav_item("tonkho.php", "warehouse", "Kho / Tồn", "tonkho", $ACTIVE);
-      nav_item("voucher.php", "shopping_bag", "Voucher", "voucher", $ACTIVE);
-      nav_item("thongbao.php", "notifications", "Thông báo", "thongbao", $ACTIVE);
-      nav_item("theodoi_gia.php", "sell", "Theo dõi giá", "gia", $ACTIVE);
-      nav_item("nhatky.php", "history", "Nhật ký hoạt động", "nhatky", $ACTIVE);
-      nav_item("baocao.php", "bar_chart", "Báo cáo", "baocao", $ACTIVE);
-      if (!empty($GLOBALS['IS_ADMIN'])) nav_item("nhanvien.php", "groups", "Nhân viên", "nhanvien", $ACTIVE);
-      nav_item("caidat.php", "settings", "Cài đặt", "caidat", $ACTIVE);
-    ?>
-    <div class="mt-auto pt-6 border-t border-gray-100">
-      <a href="dangxuat.php" class="group flex items-center gap-3 px-3 py-3 rounded-xl text-slate-600 hover:bg-slate-100 transition-all">
+  <nav class="flex-1 overflow-y-auto py-5 px-3 flex flex-col gap-2">
+    <?php if (can_access('tong_quan',$role,$dept)) nav_item('tong_quan.php',   'grid_view',     'Tổng quan',   'tong_quan',   $ACTIVE); ?>
+    <?php if (can_access('sanpham',$role,$dept)) nav_item('sanpham.php',      'inventory_2',   'Sản phẩm',    'sanpham',     $ACTIVE); ?>
+    <?php if (can_access('theodoi_gia',$role,$dept)) nav_item('theodoi_gia.php','monitoring',   'Theo dõi giá', 'theodoi_gia', $ACTIVE); ?>
+    <?php if (can_access('donhang',$role,$dept)) nav_item('donhang.php',      'shopping_bag',  'Đơn hàng',    'donhang',     $ACTIVE); ?>
+    <?php if (can_access('khachhang',$role,$dept)) nav_item('khachhang.php',  'groups',        'Khách hàng',  'khachhang',   $ACTIVE); ?>
+    <?php if (can_access('tonkho',$role,$dept)) nav_item('tonkho.php',        'warehouse',     'Tồn kho',     'tonkho',      $ACTIVE); ?>
+    <?php if (can_access('voucher',$role,$dept)) nav_item('voucher.php',      'sell',          'Voucher',     'voucher',     $ACTIVE); ?>
+    <?php if (can_access('baocao',$role,$dept)) nav_item('baocao.php',        'bar_chart',     'Báo cáo',     'baocao',      $ACTIVE); ?>
+    <?php if (can_access('nhatky',$role,$dept)) nav_item('nhatky.php',        'history',       'Nhật ký',     'nhatky',      $ACTIVE); ?>
+    <?php if (can_access('nhanvien',$role,$dept)) nav_item('nhanvien.php',    'badge',         'Nhân viên',   'nhanvien',    $ACTIVE); ?>
+
+    <div class="mt-auto pt-5 border-t border-slate-100 flex flex-col gap-2">
+      <?php if (can_access('caidat',$role,$dept)) nav_item('caidat.php', 'settings', 'Cài đặt', 'caidat', $ACTIVE); ?>
+      <a href="dang_xuat.php" class="group flex items-center gap-3 px-3 py-3 rounded-2xl text-slate-600 hover:bg-slate-100 transition-all">
         <span class="material-symbols-outlined text-slate-500 group-hover:text-primary">logout</span>
         <span class="text-sm font-extrabold hidden lg:block">Đăng xuất</span>
       </a>
+      <div class="px-3 pb-2 text-[11px] text-slate-400 font-semibold hidden lg:block">
+        Vai trò: <?= h($role) ?><?= $dept ? ' • Bộ phận: '.h($dept) : '' ?>
+      </div>
     </div>
   </nav>
 </aside>
-
-<!-- CONTENT -->
-<div class="flex-1 flex flex-col min-w-0">
-  <!-- TOPBAR -->
-  <header class="bg-white/80 backdrop-blur border-b border-gray-200 h-16 flex items-center justify-between px-4 md:px-6 sticky top-0 z-10">
-    <div class="flex items-center gap-3 min-w-0">
-      <div class="font-extrabold text-lg truncate"><?= h($PAGE_TITLE ?? 'Admin') ?></div>
-      <span class="hidden sm:inline text-xs font-extrabold px-2 py-1 rounded-full bg-slate-100 border">
-        <?= h($ROLE ?? 'ADMIN') ?>
-      </span>
-      <span class="hidden sm:inline text-xs font-bold text-slate-500">
-        Low stock: <= <?= (int)$lowStock ?>
-      </span>
-    </div>
-
-    <div class="flex items-center gap-3">
-      <form method="get" action="" class="relative hidden sm:block">
-        <span class="material-symbols-outlined absolute left-3 top-2.5 text-gray-400 text-[20px]">search</span>
-        <input name="q"
-               value="<?= h($_GET['q'] ?? '') ?>"
-               class="pl-10 pr-4 py-2 bg-gray-100 border-none rounded-lg text-sm w-72 focus:ring-2 focus:ring-primary/40"
-               placeholder="Tìm nhanh..." />
-      </form>
-
-      <a href="thongbao.php" class="p-2 rounded-full hover:bg-gray-100 text-slate-600">
-        <span class="material-symbols-outlined">notifications</span>
-      </a>
-
-      <div class="size-9 rounded-full bg-slate-200 border-2 border-white shadow-sm flex items-center justify-center font-extrabold">
-        <?= h(mb_substr($ADMIN['ho_ten'] ?? 'A', 0, 1)) ?>
-      </div>
-    </div>
-  </header>
-
-  <main class="flex-1 overflow-y-auto p-4 md:p-8">
-    <div class="max-w-7xl mx-auto space-y-6">

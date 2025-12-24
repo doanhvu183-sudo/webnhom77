@@ -1,39 +1,18 @@
-<?php /* close content + layout */ ?>
-  </div>
-</div>
-</div>
+<?php
+// admin/includes/giaoDienCuoi.php
+// Đóng container + main + body + html.
 
-<script>
-(function(){
-  const box = document.getElementById("imgPreview");
-  const img = document.getElementById("imgPreviewEl");
+if (!defined('APP_MAIN_OPENED')) {
+  // nếu trang include sai thứ tự, vẫn không vỡ trắng trang
+  define('APP_MAIN_OPENED', true);
+  echo '<main class="flex-1"></main>';
+}
+?>
 
-  function show(url){
-    if (!box || !img) return;
-    img.src = url;
-    box.style.display = "flex";
-  }
-  function hide(){
-    if (!box || !img) return;
-    box.style.display = "none";
-    img.src = "";
-  }
+    </div><!-- /container -->
+  </div><!-- /scroll -->
+</main><!-- /main -->
 
-  // hover các ảnh có class js-img
-  document.addEventListener("mouseover", function(e){
-    const t = e.target;
-    if (t && t.classList && t.classList.contains("js-img")) {
-      const url = t.getAttribute("data-full");
-      if (url) show(url);
-    }
-  });
-
-  document.addEventListener("mouseout", function(e){
-    const t = e.target;
-    if (t && t.classList && t.classList.contains("js-img")) hide();
-  });
-})();
-</script>
-
+  </div><!-- /root flex -->
 </body>
 </html>

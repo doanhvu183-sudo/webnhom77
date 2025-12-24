@@ -1,635 +1,681 @@
 <?php
 // admin/baocao.php
-session_start();
+
+/* ================= BOOT ================= */
+if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 
-/* ================= AUTH ================= */
-if (empty($_SESSION['admin']) || (!isset($_SESSION['admin']['id']) && !isset($_SESSION['admin']['id_admin']))) {
-  header("Location: dang_nhap.php"); exit;
+// nếu dự án bạn có helpers/hamChung thì ưu tiên dùng (tránh thiếu hàm)
+if (file_exists(__DIR__ . '/includes/helpers.php')) {
+  require_once __DIR__ . '/includes/helpers.php';
+} elseif (file_exists(__DIR__ . '/includes/hamChung.php')) {
+  require_once __DIR__ . '/includes/hamChung.php';
 }
-$me = $_SESSION['admin'];
-$vaiTro = strtoupper(trim($me['vai_tro'] ?? 'ADMIN'));
-$isAdmin = ($vaiTro === 'ADMIN');
 
-/* ================= Helpers ================= */
-function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-function tableExists(PDO $pdo, $name){
-  $st=$pdo->prepare("SHOW TABLES LIKE ?"); $st->execute([$name]);
-  return (bool)$st->fetchColumn();
+/* ================= SAFE HELPERS (không redeclare) ================= */
+if (!function_exists('h')) {
+  function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 }
-function getCols(PDO $pdo, $table){
-  $st=$pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?");
-  $st->execute([$table]);
-  return $st->fetchAll(PDO::FETCH_COLUMN);
-}
-function pickCol(array $cols, array $cands){
-  foreach($cands as $c){ if(in_array($c,$cols,true)) return $c; }
-  return null;
-}
-function money($n){ return number_format((int)$n, 0, ',', '.').' ₫'; }
-function pctChange($cur, $prev){
-  $cur=(float)$cur; $prev=(float)$prev;
-  if ($prev == 0) return null;
-  return (($cur-$prev)/$prev)*100.0;
-}
-function dateRangeLabel($key){
-  if ($key==='today') return 'Hôm nay';
-  if ($key==='7days') return '7 ngày qua';
-  if ($key==='month') return 'Tháng này';
-  return 'Tuỳ chọn';
-}
-function buildLinePath(array $vals, $w=500, $h=200, $pad=20){
-  // vals: [0..n-1]
-  $n = count($vals);
-  if ($n<=1) return "M0,".($h-$pad)." L".$w."," . ($h-$pad);
-  $max = max($vals);
-  $min = min($vals);
-  if ($max == $min) { $max = $min + 1; } // tránh chia 0
-  $dx = ($w - 2*$pad)/($n-1);
-
-  $pts = [];
-  for($i=0;$i<$n;$i++){
-    $x = $pad + $i*$dx;
-    $y = $h-$pad - (($vals[$i]-$min)/($max-$min))*($h-2*$pad);
-    $pts[] = [$x,$y];
+if (!function_exists('tableExists')) {
+  function tableExists(PDO $pdo, $name){
+    $st=$pdo->prepare("SHOW TABLES LIKE ?"); $st->execute([$name]);
+    return (bool)$st->fetchColumn();
   }
+}
+if (!function_exists('getCols')) {
+  function getCols(PDO $pdo, $table){
+    $st=$pdo->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=?");
+    $st->execute([$table]);
+    return $st->fetchAll(PDO::FETCH_COLUMN);
+  }
+}
+if (!function_exists('pickCol')) {
+  function pickCol(array $cols, array $cands){
+    foreach($cands as $c){ if(in_array($c,$cols,true)) return $c; }
+    return null;
+  }
+}
+if (!function_exists('money_vnd')) {
+  function money_vnd($n){
+    $n = (float)($n ?? 0);
+    return number_format($n, 0, ',', '.') . ' ₫';
+  }
+}
+if (!function_exists('auth_me')) {
+  function auth_me(){
+    $me = $_SESSION['admin'] ?? [];
+    $id = (int)($me['id'] ?? $me['id_admin'] ?? $me['id_nguoi_dung'] ?? 0);
+    $vaiTro = strtoupper(trim((string)($me['vai_tro'] ?? $me['role'] ?? 'ADMIN')));
+    $isAdmin = ($vaiTro === 'ADMIN');
+    return [$me,$id,$vaiTro,$isAdmin];
+  }
+}
 
-  // Path dạng curve nhẹ (Q/T)
-  $d = "M".$pts[0][0].",".$pts[0][1]." ";
-  for($i=1;$i<$n;$i++){
-    $prev = $pts[$i-1];
-    $cur  = $pts[$i];
-    $cx = ($prev[0]+$cur[0])/2;
-    $cy = ($prev[1]+$cur[1])/2;
-    if ($i==1){
-      $d .= "Q".$cx.",".$prev[1]." ".$cur[0].",".$cur[1]." ";
-    }else{
-      $d .= "T".$cur[0].",".$cur[1]." ";
+/**
+ * Log vào nhatky_hoatdong (theo đúng bảng bạn đang có)
+ * id_log, id_admin, vai_tro, hanh_dong, mo_ta, bang_lien_quan, id_ban_ghi, du_lieu_json, ip, user_agent, ngay_tao
+ */
+if (!function_exists('nhatky_log')) {
+  function nhatky_log(PDO $pdo, string $hanh_dong, string $mo_ta, ?string $bang=null, ?int $id_ban_ghi=null, $data=null){
+    if (!tableExists($pdo,'nhatky_hoatdong')) return;
+
+    $cols = getCols($pdo,'nhatky_hoatdong');
+    $ID_ADMIN = pickCol($cols,['id_admin','admin_id','id_user']);
+    $VAI_TRO  = pickCol($cols,['vai_tro','role']);
+    $HANH     = pickCol($cols,['hanh_dong','action']);
+    $MOTA     = pickCol($cols,['mo_ta','description']);
+    $BANG     = pickCol($cols,['bang_lien_quan','doi_tuong','table_name']);
+    $IDREC    = pickCol($cols,['id_ban_ghi','doi_tuong_id','record_id']);
+    $JSON     = pickCol($cols,['du_lieu_json','json','data_json']);
+    $IP       = pickCol($cols,['ip']);
+    $UA       = pickCol($cols,['user_agent']);
+    $NGAY     = pickCol($cols,['ngay_tao','created_at']);
+
+    $fields=[]; $vals=[]; $bind=[];
+
+    [$me,$myId,$vaiTro,$isAdmin] = auth_me();
+
+    if ($ID_ADMIN){ $fields[]=$ID_ADMIN; $vals[]=':aid'; $bind[':aid']=$myId?:null; }
+    if ($VAI_TRO){  $fields[]=$VAI_TRO;  $vals[]=':role'; $bind[':role']=strtolower($vaiTro?:'admin'); }
+    if ($HANH){     $fields[]=$HANH;     $vals[]=':act'; $bind[':act']=$hanh_dong; }
+    if ($MOTA){     $fields[]=$MOTA;     $vals[]=':des'; $bind[':des']=$mo_ta; }
+    if ($BANG && $bang!==null){ $fields[]=$BANG; $vals[]=':tbl'; $bind[':tbl']=$bang; }
+    if ($IDREC && $id_ban_ghi!==null){ $fields[]=$IDREC; $vals[]=':rid'; $bind[':rid']=$id_ban_ghi; }
+    if ($JSON){
+      $fields[]=$JSON; $vals[]=':js';
+      $bind[':js']= is_string($data) ? $data : json_encode($data, JSON_UNESCAPED_UNICODE);
     }
+    if ($IP){ $fields[]=$IP; $vals[]=':ip'; $bind[':ip']=($_SERVER['REMOTE_ADDR'] ?? null); }
+    if ($UA){ $fields[]=$UA; $vals[]=':ua'; $bind[':ua']=($_SERVER['HTTP_USER_AGENT'] ?? null); }
+    if ($NGAY){ $fields[]=$NGAY; $vals[]='NOW()'; }
+
+    if (!$fields) return;
+
+    $sql="INSERT INTO nhatky_hoatdong(".implode(',',$fields).") VALUES(".implode(',',$vals).")";
+    $pdo->prepare($sql)->execute($bind);
   }
-  return trim($d);
 }
 
-/* ================= Detect tables/columns ================= */
-$hasDon = tableExists($pdo,'donhang');
-if(!$hasDon){
-  die("Thiếu bảng <b>donhang</b> nên không thể chạy báo cáo.");
+/* ================= AUTH ================= */
+if (empty($_SESSION['admin'])) { header("Location: dang_nhap.php"); exit; }
+[$me,$myId,$vaiTro,$isAdmin] = auth_me();
+
+$ACTIVE = 'baocao';
+$PAGE_TITLE = 'Báo cáo';
+
+// nếu hệ thống có requirePermission thì gọi, không có thì bỏ qua
+if (function_exists('requirePermission')) {
+  requirePermission('baocao');
 }
+
+/* ================= VALIDATE CORE TABLE ================= */
+if (!tableExists($pdo,'donhang')) {
+  die("Thiếu bảng <b>donhang</b> nên không thể xem báo cáo.");
+}
+
+/* ================= MAP COLUMNS ================= */
 $dhCols = getCols($pdo,'donhang');
-$DH_ID     = pickCol($dhCols, ['id_don_hang','id','donhang_id']);
-$DH_TOTAL  = pickCol($dhCols, ['tong_tien','total','tongtien']);
-$DH_DATE   = pickCol($dhCols, ['ngay_dat','ngay_tao','created_at','ngay_cap_nhat']);
+$DH_ID     = pickCol($dhCols, ['id_don_hang','id']);
+$DH_USER   = pickCol($dhCols, ['id_nguoi_dung','id_khach_hang','id_user']);
+$DH_TOTAL  = pickCol($dhCols, ['tong_thanh_toan','tong_tien','tong_cong','tong']);
 $DH_STATUS = pickCol($dhCols, ['trang_thai','status']);
-$DH_PAY    = pickCol($dhCols, ['phuong_thuc','payment_method']);
-
-if(!$DH_TOTAL || !$DH_DATE){
-  die("Bảng <b>donhang</b> thiếu cột bắt buộc (tong_tien/ngay_dat).");
+$DH_DATE   = pickCol($dhCols, ['ngay_dat','created_at','ngay_tao','date_created']);
+$DH_VOUCH  = pickCol($dhCols, ['ma_voucher','voucher_code','code_voucher']);
+if(!$DH_ID || !$DH_TOTAL || !$DH_DATE){
+  die("Bảng donhang thiếu cột cần thiết (id / tổng tiền / ngày).");
 }
 
-$ctTable = null;
-foreach(['ct_donhang','ct_don_hang','chitietdonhang','ctdonhang'] as $t){
-  if(tableExists($pdo,$t)) { $ctTable=$t; break; }
+$ctOk = tableExists($pdo,'chitiet_donhang');
+$ctCols = $ctOk ? getCols($pdo,'chitiet_donhang') : [];
+$CT_IDDH  = $ctOk ? pickCol($ctCols, ['id_don_hang']) : null;
+$CT_IDSP  = $ctOk ? pickCol($ctCols, ['id_san_pham']) : null;
+$CT_NAME  = $ctOk ? pickCol($ctCols, ['ten_san_pham','ten']) : null;
+$CT_QTY   = $ctOk ? pickCol($ctCols, ['so_luong','qty','quantity']) : null;
+$CT_TOTAL = $ctOk ? pickCol($ctCols, ['thanh_tien','line_total','tong']) : null;
+
+$spOk = tableExists($pdo,'sanpham');
+$spCols = $spOk ? getCols($pdo,'sanpham') : [];
+$SP_ID    = $spOk ? pickCol($spCols, ['id_san_pham','id']) : null;
+$SP_NAME  = $spOk ? pickCol($spCols, ['ten_san_pham','ten']) : null;
+$SP_IMG   = $spOk ? pickCol($spCols, ['hinh_anh','anh','image']) : null;
+$SP_COST  = $spOk ? pickCol($spCols, ['gia_nhap','gia_von','cost']) : null;
+$SP_PRICE = $spOk ? pickCol($spCols, ['gia','gia_ban','price']) : null;
+
+$tkOk = tableExists($pdo,'tonkho');
+$tkCols = $tkOk ? getCols($pdo,'tonkho') : [];
+$TK_IDSP = $tkOk ? pickCol($tkCols, ['id_san_pham']) : null;
+$TK_QTY  = $tkOk ? pickCol($tkCols, ['so_luong','ton','qty']) : null;
+
+$ndOk = tableExists($pdo,'nguoidung');
+$vcOk = tableExists($pdo,'voucher');
+$cdOk = tableExists($pdo,'cai_dat');
+
+/* ================= SETTINGS ================= */
+$lowStock = 5;
+if ($cdOk) {
+  $cdCols = getCols($pdo,'cai_dat');
+  $CD_KEY = pickCol($cdCols, ['khoa','key','ten']);
+  $CD_VAL = pickCol($cdCols, ['gia_tri','value','noi_dung']);
+  if ($CD_KEY && $CD_VAL) {
+    $st=$pdo->prepare("SELECT $CD_VAL FROM cai_dat WHERE $CD_KEY=? LIMIT 1");
+    $st->execute(['low_stock_threshold']);
+    $v=$st->fetchColumn();
+    if ($v!==false && $v!==null && $v!=='') $lowStock = max(1,(int)$v);
+  }
 }
-$ctCols = $ctTable ? getCols($pdo,$ctTable) : [];
-$CT_SP   = $ctTable ? pickCol($ctCols, ['id_san_pham','id_sp','sanpham_id']) : null;
-$CT_QTY  = $ctTable ? pickCol($ctCols, ['so_luong','qty','so_luong_mua']) : null;
-$CT_DHID = $ctTable ? pickCol($ctCols, ['id_don_hang','donhang_id','id']) : null;
 
-$hasSP = tableExists($pdo,'sanpham');
-$spCols = $hasSP ? getCols($pdo,'sanpham') : [];
-$SP_ID   = $hasSP ? pickCol($spCols, ['id_san_pham','id','sanpham_id']) : null;
-$SP_NAME = $hasSP ? pickCol($spCols, ['ten_san_pham','ten','name']) : null;
-$SP_IMG  = $hasSP ? pickCol($spCols, ['hinh_anh','anh','image']) : null;
-$SP_GIA  = $hasSP ? pickCol($spCols, ['gia','gia_ban','price']) : null;
-
-$tonTable = tableExists($pdo,'tonkho') ? 'tonkho' : null;
-$tonCols  = $tonTable ? getCols($pdo,$tonTable) : [];
-$TON_SP   = $tonTable ? pickCol($tonCols, ['id_san_pham','sanpham_id']) : null;
-$TON_QTY  = $tonTable ? pickCol($tonCols, ['so_luong','ton','qty']) : null;
-
-$userTable = null;
-foreach (['nguoidung','nguoi_dung','users','khachhang'] as $t){
-  if (tableExists($pdo,$t)) { $userTable = $t; break; }
-}
-$uCols = $userTable ? getCols($pdo,$userTable) : [];
-$U_ID  = $userTable ? pickCol($uCols, ['id_nguoi_dung','id_khach_hang','id','user_id']) : null;
-$U_CREATE = $userTable ? pickCol($uCols, ['ngay_tao','created_at','ngay_dang_ky']) : null;
-
-$voucherTable = null;
-foreach (['voucher','khuyenmai','khuyen_mai','ma_giam_gia','uudai'] as $t){
-  if (tableExists($pdo,$t)) { $voucherTable = $t; break; }
-}
-
-/* ================= Range filter ================= */
+/* ================= RANGE ================= */
 $range = $_GET['range'] ?? 'today';
-if (!in_array($range,['today','7days','month'],true)) $range='today';
+if (!in_array($range, ['today','7days','month'], true)) $range='today';
 
-$now = new DateTime('now');
-$start = clone $now; $end = clone $now;
-$start->setTime(0,0,0);
-$end->setTime(23,59,59);
+$tz = new DateTimeZone('Asia/Ho_Chi_Minh');
+$now = new DateTime('now', $tz);
+$today = (new DateTime('today', $tz));
 
-$daysCount = 1;
-if ($range==='7days'){
-  $start = (new DateTime('now'))->modify('-6 days')->setTime(0,0,0);
-  $daysCount = 7;
+if ($range==='today') {
+  $start = clone $today;
+  $end = clone $now;
+  $labelRange = 'Hôm nay';
+  $prevStart = (clone $start)->modify('-1 day');
+  $prevEnd   = (clone $end)->modify('-1 day');
 }
-if ($range==='month'){
-  $start = (new DateTime('first day of this month'))->setTime(0,0,0);
-  $daysCount = (int)$now->format('j'); // số ngày từ đầu tháng đến nay
+elseif ($range==='7days') {
+  $start = (clone $today)->modify('-6 day'); // 7 ngày gồm hôm nay
+  $end = clone $now;
+  $labelRange = '7 ngày';
+  $prevStart = (clone $start)->modify('-7 day');
+  $prevEnd   = (clone $end)->modify('-7 day');
+}
+else { // month
+  $start = (clone $today)->modify('first day of this month');
+  $end = clone $now;
+  $labelRange = 'Tháng';
+  $prevStart = (clone $start)->modify('first day of last month');
+  $prevEnd   = (clone $end)->modify('last day of last month')->setTime(23,59,59);
 }
 
-$startStr = $start->format('Y-m-d H:i:s');
-$endStr   = $end->format('Y-m-d H:i:s');
+// SQL datetime strings
+$startStr = $start->format('Y-m-d 00:00:00');
+$endStr   = $end->format('Y-m-d 23:59:59');
+$prevStartStr = $prevStart->format('Y-m-d 00:00:00');
+$prevEndStr   = $prevEnd->format('Y-m-d 23:59:59');
 
-/* previous period để so sánh */
-$prevEnd = (clone $start)->modify('-1 second');
-$prevStart = (clone $prevEnd)->modify('-'.($daysCount-1).' days')->setTime(0,0,0);
-$prevStartStr = $prevStart->format('Y-m-d H:i:s');
-$prevEndStr   = $prevEnd->format('Y-m-d H:i:s');
+/* ================= KPI QUERIES ================= */
+$sumSql = "SELECT IFNULL(SUM($DH_TOTAL),0) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?";
+$cntSql = "SELECT COUNT(*) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?";
 
-/* ================= Summary metrics (real) ================= */
-$st = $pdo->prepare("SELECT COALESCE(SUM($DH_TOTAL),0) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?");
-$st->execute([$startStr,$endStr]);
-$revenue = (int)$st->fetchColumn();
+$st=$pdo->prepare($sumSql); $st->execute([$startStr,$endStr]); $revenue = (float)$st->fetchColumn();
+$st=$pdo->prepare($sumSql); $st->execute([$prevStartStr,$prevEndStr]); $revenuePrev = (float)$st->fetchColumn();
 
-$st = $pdo->prepare("SELECT COUNT(*) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?");
-$st->execute([$startStr,$endStr]);
-$orders = (int)$st->fetchColumn();
+$st=$pdo->prepare($cntSql); $st->execute([$startStr,$endStr]); $orders = (int)$st->fetchColumn();
+$st=$pdo->prepare($cntSql); $st->execute([$prevStartStr,$prevEndStr]); $ordersPrev = (int)$st->fetchColumn();
 
-$st = $pdo->prepare("SELECT COALESCE(SUM($DH_TOTAL),0) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?");
-$st->execute([$prevStartStr,$prevEndStr]);
-$prevRevenue = (int)$st->fetchColumn();
+$avg = $orders>0 ? ($revenue/$orders) : 0;
+$avgPrev = $ordersPrev>0 ? ($revenuePrev/$ordersPrev) : 0;
 
-$st = $pdo->prepare("SELECT COUNT(*) FROM donhang WHERE $DH_DATE BETWEEN ? AND ?");
-$st->execute([$prevStartStr,$prevEndStr]);
-$prevOrders = (int)$st->fetchColumn();
+$customersTotal = 0;
+if ($ndOk) {
+  $st=$pdo->query("SELECT COUNT(*) FROM nguoidung");
+  $customersTotal = (int)$st->fetchColumn();
+} else {
+  // fallback: distinct user in donhang (nếu có)
+  if ($DH_USER) {
+    $st=$pdo->prepare("SELECT COUNT(DISTINCT $DH_USER) FROM donhang");
+    $st->execute();
+    $customersTotal = (int)$st->fetchColumn();
+  }
+}
+$vouchersTotal = 0;
+if ($vcOk) {
+  $st=$pdo->query("SELECT COUNT(*) FROM voucher");
+  $vouchersTotal = (int)$st->fetchColumn();
+}
 
-$avgOrder = $orders>0 ? (int)round($revenue/$orders) : 0;
-$prevAvgOrder = $prevOrders>0 ? (int)round($prevRevenue/$prevOrders) : 0;
+/* ================= TREND % ================= */
+$trendPct = function($cur,$prev){
+  if ($prev<=0) return ($cur>0?100:0);
+  return round((($cur-$prev)/$prev)*100, 1);
+};
+$revPct = $trendPct($revenue,$revenuePrev);
+$ordPct = $trendPct($orders,$ordersPrev);
+$avgPct = $trendPct($avg,$avgPrev);
 
-$revChange = pctChange($revenue,$prevRevenue);
-$ordChange = pctChange($orders,$prevOrders);
-$avgChange = pctChange($avgOrder,$prevAvgOrder);
+/* ================= CHART DATA (daily) ================= */
+$groupDaily = function($from,$to) use($pdo,$DH_DATE,$DH_TOTAL){
+  $sql = "
+    SELECT DATE($DH_DATE) AS d, IFNULL(SUM($DH_TOTAL),0) AS s
+    FROM donhang
+    WHERE $DH_DATE BETWEEN ? AND ?
+    GROUP BY DATE($DH_DATE)
+    ORDER BY d ASC
+  ";
+  $st=$pdo->prepare($sql);
+  $st->execute([$from,$to]);
+  $map=[];
+  foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+    $map[$r['d']] = (float)$r['s'];
+  }
+  return $map;
+};
 
-/* trạng thái đơn */
+$mapCur = $groupDaily($startStr,$endStr);
+$mapPrev= $groupDaily($prevStartStr,$prevEndStr);
+
+// build labels by day between start and end
+$labels=[]; $dataCur=[]; $dataPrev=[];
+$it = new DateTime($start->format('Y-m-d'), $tz);
+$itEnd = new DateTime($end->format('Y-m-d'), $tz);
+$days=0;
+while($it <= $itEnd && $days<400){
+  $d = $it->format('Y-m-d');
+  $labels[] = $it->format('d/m');
+  $dataCur[] = (float)($mapCur[$d] ?? 0);
+
+  // map previous by index: same offset from prevStart
+  $dPrev = (clone $prevStart)->modify("+$days day")->format('Y-m-d');
+  $dataPrev[] = (float)($mapPrev[$dPrev] ?? 0);
+
+  $it->modify('+1 day'); $days++;
+}
+
+/* ================= STATUS BREAKDOWN ================= */
 $statusRows = [];
 if ($DH_STATUS){
-  $st = $pdo->prepare("SELECT $DH_STATUS AS st, COUNT(*) AS c
-                       FROM donhang
-                       WHERE $DH_DATE BETWEEN ? AND ?
-                       GROUP BY $DH_STATUS
-                       ORDER BY c DESC");
+  $st=$pdo->prepare("SELECT $DH_STATUS AS st, COUNT(*) AS c FROM donhang WHERE $DH_DATE BETWEEN ? AND ? GROUP BY $DH_STATUS ORDER BY c DESC");
   $st->execute([$startStr,$endStr]);
   $statusRows = $st->fetchAll(PDO::FETCH_ASSOC);
 }
 
-/* doanh thu theo ngày (để vẽ chart) */
-$dailyMap = [];
-$st = $pdo->prepare("SELECT DATE($DH_DATE) AS d, COALESCE(SUM($DH_TOTAL),0) AS v
-                     FROM donhang
-                     WHERE $DH_DATE BETWEEN ? AND ?
-                     GROUP BY DATE($DH_DATE)
-                     ORDER BY d ASC");
-$st->execute([$startStr,$endStr]);
-foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
-  $dailyMap[$r['d']] = (int)$r['v'];
-}
-$labels = [];
-$vals = [];
-$tmp = clone $start;
-for($i=0;$i<$daysCount;$i++){
-  $d = $tmp->format('Y-m-d');
-  $labels[] = $tmp->format('d/m');
-  $vals[] = (int)($dailyMap[$d] ?? 0);
-  $tmp->modify('+1 day');
-}
-$path = buildLinePath($vals, 500, 200, 20);
-
-/* top bán chạy */
-$topProducts = [];
-if ($ctTable && $hasSP && $CT_SP && $CT_QTY && $CT_DHID && $SP_ID){
-  $sql = "SELECT sp.$SP_ID AS id, ".($SP_NAME ? "sp.$SP_NAME AS ten" : "sp.$SP_ID AS ten").",
-                 ".($SP_IMG ? "sp.$SP_IMG AS hinh" : "NULL AS hinh").",
-                 SUM(ct.$CT_QTY) AS qty
-          FROM $ctTable ct
-          JOIN donhang d ON d.$DH_ID = ct.$CT_DHID
-          JOIN sanpham sp ON sp.$SP_ID = ct.$CT_SP
-          WHERE d.$DH_DATE BETWEEN ? AND ?
-          GROUP BY sp.$SP_ID
-          ORDER BY qty DESC
-          LIMIT 8";
-  $st = $pdo->prepare($sql);
+/* ================= BEST SELLERS ================= */
+$best = [];
+$bestNote = '';
+if ($ctOk && $CT_IDDH && $CT_QTY){
+  $nameExpr = $CT_NAME ? "MAX(ct.$CT_NAME)" : "''";
+  $lineTotalExpr = $CT_TOTAL ? "IFNULL(SUM(ct.$CT_TOTAL),0)" : "IFNULL(SUM(ct.$CT_QTY * $DH_TOTAL / NULLIF(1,1)),0)"; // fallback (won't run)
+  $sql = "
+    SELECT
+      ct.$CT_IDSP AS id_sp,
+      $nameExpr AS ten,
+      IFNULL(SUM(ct.$CT_QTY),0) AS so_luong,
+      ".($CT_TOTAL ? "IFNULL(SUM(ct.$CT_TOTAL),0)" : "0")." AS doanh_thu
+    FROM chitiet_donhang ct
+    JOIN donhang dh ON dh.$DH_ID = ct.$CT_IDDH
+    WHERE dh.$DH_DATE BETWEEN ? AND ?
+    GROUP BY ct.$CT_IDSP
+    ORDER BY so_luong DESC
+    LIMIT 5
+  ";
+  $st=$pdo->prepare($sql);
   $st->execute([$startStr,$endStr]);
-  $topProducts = $st->fetchAll(PDO::FETCH_ASSOC);
+  $best = $st->fetchAll(PDO::FETCH_ASSOC);
+
+  // attach image + price info
+  if ($spOk && $SP_ID){
+    $ids = array_values(array_filter(array_map(fn($r)=> (int)($r['id_sp'] ?? 0), $best)));
+    if ($ids){
+      $in = implode(',', array_fill(0,count($ids),'?'));
+      $colsNeed = [$SP_ID];
+      if ($SP_NAME) $colsNeed[]=$SP_NAME;
+      if ($SP_IMG)  $colsNeed[]=$SP_IMG;
+      if ($SP_PRICE)$colsNeed[]=$SP_PRICE;
+      $q="SELECT ".implode(',',$colsNeed)." FROM sanpham WHERE $SP_ID IN ($in)";
+      $st=$pdo->prepare($q); $st->execute($ids);
+      $spMap=[];
+      foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+        $spMap[(int)$r[$SP_ID]] = $r;
+      }
+      foreach($best as &$b){
+        $idsp = (int)($b['id_sp'] ?? 0);
+        $sp = $spMap[$idsp] ?? [];
+        $b['_img'] = ($SP_IMG && isset($sp[$SP_IMG])) ? (string)$sp[$SP_IMG] : '';
+        $b['_gia'] = ($SP_PRICE && isset($sp[$SP_PRICE])) ? (float)$sp[$SP_PRICE] : null;
+        if (($b['ten'] ?? '')==='' && $SP_NAME && isset($sp[$SP_NAME])) $b['ten'] = $sp[$SP_NAME];
+      }
+      unset($b);
+    }
+  }
+} else {
+  $bestNote = 'Thiếu bảng/cột chi tiết đơn để thống kê bán chạy.';
 }
 
-/* tồn kho thấp */
-$lowStock = [];
-if ($tonTable && $hasSP && $TON_SP && $TON_QTY && $SP_ID){
-  $sql = "SELECT sp.$SP_ID AS id, ".($SP_NAME ? "sp.$SP_NAME AS ten" : "sp.$SP_ID AS ten").",
-                 ".($SP_IMG ? "sp.$SP_IMG AS hinh" : "NULL AS hinh").",
-                 t.$TON_QTY AS so_luong
-          FROM $tonTable t
-          JOIN sanpham sp ON sp.$SP_ID = t.$TON_SP
-          WHERE t.$TON_QTY <= 5
-          ORDER BY t.$TON_QTY ASC
-          LIMIT 8";
-  $lowStock = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+/* ================= LOW STOCK ================= */
+$low = [];
+$lowNote = '';
+if ($tkOk && $TK_IDSP && $TK_QTY){
+  $sql="SELECT $TK_IDSP AS id_sp, $TK_QTY AS so_luong FROM tonkho WHERE $TK_QTY <= ? ORDER BY $TK_QTY ASC LIMIT 8";
+  $st=$pdo->prepare($sql); $st->execute([$lowStock]);
+  $low=$st->fetchAll(PDO::FETCH_ASSOC);
+
+  // join sanpham for name/image
+  if ($spOk && $SP_ID){
+    $ids = array_values(array_filter(array_map(fn($r)=> (int)($r['id_sp'] ?? 0), $low)));
+    if ($ids){
+      $in = implode(',', array_fill(0,count($ids),'?'));
+      $colsNeed=[$SP_ID];
+      if ($SP_NAME) $colsNeed[]=$SP_NAME;
+      if ($SP_IMG)  $colsNeed[]=$SP_IMG;
+      $q="SELECT ".implode(',',$colsNeed)." FROM sanpham WHERE $SP_ID IN ($in)";
+      $st=$pdo->prepare($q); $st->execute($ids);
+      $spMap=[];
+      foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+        $spMap[(int)$r[$SP_ID]]=$r;
+      }
+      foreach($low as &$r){
+        $sp=$spMap[(int)$r['id_sp']] ?? [];
+        $r['_ten'] = ($SP_NAME && isset($sp[$SP_NAME])) ? (string)$sp[$SP_NAME] : ('#'.(int)$r['id_sp']);
+        $r['_img'] = ($SP_IMG && isset($sp[$SP_IMG])) ? (string)$sp[$SP_IMG] : '';
+      }
+      unset($r);
+    }
+  }
+} else {
+  $lowNote = 'Nếu bạn muốn báo cáo tồn kho: cần bảng tonkho có cột id_san_pham và so_luong.';
 }
 
-/* counts khác */
-$customerCount = 0;
-if ($userTable && $U_ID){
-  $customerCount = (int)$pdo->query("SELECT COUNT(*) FROM $userTable")->fetchColumn();
-}
-$newCustomer = 0;
-if ($userTable && $U_CREATE){
-  $st = $pdo->prepare("SELECT COUNT(*) FROM $userTable WHERE $U_CREATE BETWEEN ? AND ?");
-  $st->execute([$startStr,$endStr]);
-  $newCustomer = (int)$st->fetchColumn();
-}
-$voucherCount = 0;
-if ($voucherTable){
-  $voucherCount = (int)$pdo->query("SELECT COUNT(*) FROM $voucherTable")->fetchColumn();
+/* ================= LOG VIEW ================= */
+nhatky_log($pdo,'XEM_BAO_CAO',"Xem báo cáo ($labelRange)",'baocao',null,['range'=>$range,'from'=>$startStr,'to'=>$endStr]);
+
+/* ================= RENDER ================= */
+require_once __DIR__ . '/includes/giaoDienDau.php';
+require_once __DIR__ . '/includes/thanhBen.php';
+require_once __DIR__ . '/includes/thanhTren.php';
+
+function pill($key,$label,$active){
+  $is = ($key===$active);
+  $cls = $is ? "bg-primary/10 text-primary border-primary/20" : "bg-white text-slate-700 border-line hover:bg-slate-50";
+  $href = "baocao.php?range=".$key;
+  echo '<a href="'.h($href).'" class="px-3 py-2 rounded-xl border text-sm font-extrabold '.$cls.'">'.$label.'</a>';
 }
 ?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Admin - Báo cáo</title>
+<div class="p-4 md:p-8">
+  <div class="max-w-7xl mx-auto space-y-6">
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<script>
-tailwind.config = {
-  theme:{extend:{
-    colors:{primary:"#137fec","background-light":"#f8f9fa",success:"#10b981",warning:"#f59e0b",danger:"#ef4444"},
-    fontFamily:{display:["Manrope","sans-serif"]},
-    boxShadow:{soft:"0 4px 20px -2px rgba(0,0,0,.05)"},
-    borderRadius:{'2xl':"1.5rem"}
-  }}
-}
-</script>
-<style>
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
-</style>
-</head>
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="text-xl font-extrabold">Báo cáo</div>
+        <span class="px-3 py-1 rounded-full text-xs font-extrabold bg-slate-100 text-slate-700"><?= h($labelRange) ?></span>
+      </div>
 
-<body class="font-display bg-background-light text-slate-800 h-screen overflow-hidden flex">
-
-<!-- SIDEBAR -->
-<aside class="w-20 lg:w-64 bg-white border-r border-gray-200 hidden md:flex flex-col h-full flex-shrink-0">
-  <div class="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b border-gray-100">
-    <div class="size-8 rounded bg-primary flex items-center justify-center text-white font-bold text-xl">C</div>
-    <span class="ml-3 font-bold text-lg hidden lg:block text-slate-900">Crocs Admin</span>
-  </div>
-
-  <nav class="flex-1 overflow-y-auto py-6 px-3 flex flex-col gap-2">
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="index.php">
-      <span class="material-symbols-outlined group-hover:text-primary">grid_view</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Tổng quan</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="sanpham.php">
-      <span class="material-symbols-outlined group-hover:text-primary">inventory_2</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Sản phẩm</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="donhang.php">
-      <span class="material-symbols-outlined group-hover:text-primary">shopping_bag</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Đơn hàng</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="khachhang.php">
-      <span class="material-symbols-outlined group-hover:text-primary">groups</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Khách hàng</span>
-    </a>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="voucher.php">
-      <span class="material-symbols-outlined group-hover:text-primary">sell</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Voucher</span>
-    </a>
-
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl bg-primary text-white shadow-soft" href="baocao.php">
-      <span class="material-symbols-outlined">bar_chart</span>
-      <span class="text-sm font-bold hidden lg:block">Báo cáo</span>
-    </a>
-
-    <?php if($isAdmin): ?>
-    <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="nhanvien.php">
-      <span class="material-symbols-outlined group-hover:text-primary">badge</span>
-      <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Nhân viên</span>
-    </a>
-    <?php endif; ?>
-
-    <div class="mt-auto pt-6 border-t border-gray-100">
-      <a class="flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-100 text-slate-600 group" href="dang_xuat.php">
-        <span class="material-symbols-outlined group-hover:text-primary">logout</span>
-        <span class="text-sm font-medium hidden lg:block group-hover:text-slate-900">Đăng xuất</span>
-      </a>
-    </div>
-  </nav>
-</aside>
-
-<!-- MAIN -->
-<main class="flex-1 flex flex-col h-full overflow-hidden">
-
-  <!-- TOPBAR -->
-  <header class="bg-white/80 backdrop-blur-md border-b border-gray-200 h-16 flex items-center justify-between px-6 sticky top-0 z-20">
-    <div class="flex items-center gap-3">
-      <h2 class="text-xl font-bold hidden sm:block">Báo cáo</h2>
-      <span class="text-xs px-3 py-1 rounded-full bg-gray-100 text-slate-600 font-bold">
-        <?= h(dateRangeLabel($range)) ?>
-      </span>
-    </div>
-
-    <div class="flex items-center gap-2">
-      <a class="px-3 py-2 rounded-xl text-sm font-extrabold border bg-white <?= $range==='today'?'border-primary text-primary':'border-gray-200 text-slate-700' ?>"
-         href="baocao.php?range=today">Hôm nay</a>
-      <a class="px-3 py-2 rounded-xl text-sm font-extrabold border bg-white <?= $range==='7days'?'border-primary text-primary':'border-gray-200 text-slate-700' ?>"
-         href="baocao.php?range=7days">7 ngày</a>
-      <a class="px-3 py-2 rounded-xl text-sm font-extrabold border bg-white <?= $range==='month'?'border-primary text-primary':'border-gray-200 text-slate-700' ?>"
-         href="baocao.php?range=month">Tháng</a>
-
-      <div class="ml-2 text-xs px-3 py-1 rounded-full bg-gray-100 text-slate-600 font-bold">
-        <?= $isAdmin ? 'ADMIN' : 'NHÂN VIÊN' ?>
+      <div class="flex items-center gap-2">
+        <?php pill('today','Hôm nay',$range); ?>
+        <?php pill('7days','7 ngày',$range); ?>
+        <?php pill('month','Tháng',$range); ?>
       </div>
     </div>
-  </header>
 
-  <div class="flex-1 overflow-y-auto p-4 md:p-8">
-    <div class="max-w-7xl mx-auto flex flex-col gap-6">
-
-      <!-- CARDS -->
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex justify-between items-start mb-4">
-            <div class="p-3 bg-blue-50 rounded-xl text-primary"><span class="material-symbols-outlined">attach_money</span></div>
-            <?php if($revChange!==null): ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg <?= $revChange>=0?'bg-green-50 text-green-700':'bg-red-50 text-red-700' ?>">
-                <?= ($revChange>=0?'+':'').number_format($revChange,1) ?>%
-              </span>
-            <?php else: ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg bg-slate-100 text-slate-600">—</span>
-            <?php endif; ?>
+    <!-- KPI -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-start justify-between">
+          <div class="size-12 rounded-2xl bg-primary/10 grid place-items-center">
+            <span class="material-symbols-outlined text-primary">paid</span>
           </div>
-          <div class="text-slate-500 text-sm font-medium">Doanh thu</div>
-          <div class="text-2xl font-extrabold text-slate-900 mt-1"><?= money($revenue) ?></div>
-          <div class="text-xs text-slate-400 mt-2">Kỳ trước: <b class="text-slate-600"><?= money($prevRevenue) ?></b></div>
+          <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $revPct>=0?'bg-green-50 text-green-600':'bg-red-50 text-red-600' ?>">
+            <?= ($revPct>=0?'+':'').h($revPct) ?>%
+          </span>
+        </div>
+        <div class="mt-4 text-sm text-muted font-bold">Doanh thu</div>
+        <div class="mt-1 text-2xl font-extrabold"><?= money_vnd($revenue) ?></div>
+        <div class="mt-2 text-xs text-muted font-bold">Kỳ trước: <?= money_vnd($revenuePrev) ?></div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-start justify-between">
+          <div class="size-12 rounded-2xl bg-purple-50 grid place-items-center">
+            <span class="material-symbols-outlined text-purple-600">shopping_cart</span>
+          </div>
+          <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $ordPct>=0?'bg-green-50 text-green-600':'bg-red-50 text-red-600' ?>">
+            <?= ($ordPct>=0?'+':'').h($ordPct) ?>%
+          </span>
+        </div>
+        <div class="mt-4 text-sm text-muted font-bold">Đơn hàng</div>
+        <div class="mt-1 text-2xl font-extrabold"><?= number_format($orders) ?></div>
+        <div class="mt-2 text-xs text-muted font-bold">Kỳ trước: <?= number_format($ordersPrev) ?></div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-start justify-between">
+          <div class="size-12 rounded-2xl bg-amber-50 grid place-items-center">
+            <span class="material-symbols-outlined text-amber-700">receipt_long</span>
+          </div>
+          <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $avgPct>=0?'bg-green-50 text-green-600':'bg-red-50 text-red-600' ?>">
+            <?= ($avgPct>=0?'+':'').h($avgPct) ?>%
+          </span>
+        </div>
+        <div class="mt-4 text-sm text-muted font-bold">Giá trị TB / đơn</div>
+        <div class="mt-1 text-2xl font-extrabold"><?= money_vnd($avg) ?></div>
+        <div class="mt-2 text-xs text-muted font-bold">Kỳ trước: <?= money_vnd($avgPrev) ?></div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-start justify-between">
+          <div class="size-12 rounded-2xl bg-cyan-50 grid place-items-center">
+            <span class="material-symbols-outlined text-cyan-700">group</span>
+          </div>
+          <span class="px-3 py-1 rounded-full text-xs font-extrabold bg-slate-100 text-slate-700">
+            +0
+          </span>
+        </div>
+        <div class="mt-4 text-sm text-muted font-bold">Khách hàng</div>
+        <div class="mt-1 text-2xl font-extrabold"><?= number_format($customersTotal) ?></div>
+        <div class="mt-2 text-xs text-muted font-bold">Voucher: <?= number_format($vouchersTotal) ?></div>
+      </div>
+    </div>
+
+    <!-- Chart + Status -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2 bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-base font-extrabold">Biểu đồ doanh thu</div>
+            <div class="text-xs text-muted font-bold"><?= h($labelRange) ?> (theo ngày)</div>
+          </div>
+          <div class="text-xs text-muted font-bold">Nguồn: donhang</div>
         </div>
 
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex justify-between items-start mb-4">
-            <div class="p-3 bg-purple-50 rounded-xl text-purple-600"><span class="material-symbols-outlined">shopping_cart</span></div>
-            <?php if($ordChange!==null): ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg <?= $ordChange>=0?'bg-green-50 text-green-700':'bg-red-50 text-red-700' ?>">
-                <?= ($ordChange>=0?'+':'').number_format($ordChange,1) ?>%
-              </span>
-            <?php else: ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg bg-slate-100 text-slate-600">—</span>
-            <?php endif; ?>
-          </div>
-          <div class="text-slate-500 text-sm font-medium">Đơn hàng</div>
-          <div class="text-2xl font-extrabold text-slate-900 mt-1"><?= number_format($orders) ?></div>
-          <div class="text-xs text-slate-400 mt-2">Kỳ trước: <b class="text-slate-600"><?= number_format($prevOrders) ?></b></div>
+        <div class="mt-4">
+          <canvas id="revChart" height="110"></canvas>
         </div>
 
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex justify-between items-start mb-4">
-            <div class="p-3 bg-orange-50 rounded-xl text-orange-600"><span class="material-symbols-outlined">receipt_long</span></div>
-            <?php if($avgChange!==null): ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg <?= $avgChange>=0?'bg-green-50 text-green-700':'bg-red-50 text-red-700' ?>">
-                <?= ($avgChange>=0?'+':'').number_format($avgChange,1) ?>%
-              </span>
-            <?php else: ?>
-              <span class="text-xs font-extrabold px-2 py-1 rounded-lg bg-slate-100 text-slate-600">—</span>
-            <?php endif; ?>
+        <?php
+          $totalCur = array_sum($dataCur);
+          $maxDay = max($dataCur ?: [0]);
+          $minDay = min($dataCur ?: [0]);
+          $avgDay = count($dataCur) ? ($totalCur / count($dataCur)) : 0;
+        ?>
+        <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="rounded-2xl border border-line p-3">
+            <div class="text-xs text-muted font-bold">Tổng</div>
+            <div class="text-sm font-extrabold"><?= money_vnd($totalCur) ?></div>
           </div>
-          <div class="text-slate-500 text-sm font-medium">Giá trị TB / đơn</div>
-          <div class="text-2xl font-extrabold text-slate-900 mt-1"><?= money($avgOrder) ?></div>
-          <div class="text-xs text-slate-400 mt-2">Kỳ trước: <b class="text-slate-600"><?= money($prevAvgOrder) ?></b></div>
-        </div>
-
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex justify-between items-start mb-4">
-            <div class="p-3 bg-cyan-50 rounded-xl text-cyan-600"><span class="material-symbols-outlined">group</span></div>
-            <span class="text-xs font-extrabold px-2 py-1 rounded-lg bg-slate-100 text-slate-600">
-              +<?= number_format($newCustomer) ?>
-            </span>
+          <div class="rounded-2xl border border-line p-3">
+            <div class="text-xs text-muted font-bold">Ngày cao nhất</div>
+            <div class="text-sm font-extrabold"><?= money_vnd($maxDay) ?></div>
           </div>
-          <div class="text-slate-500 text-sm font-medium">Khách hàng</div>
-          <div class="text-2xl font-extrabold text-slate-900 mt-1"><?= number_format($customerCount) ?></div>
-          <div class="text-xs text-slate-400 mt-2">Voucher: <b class="text-slate-600"><?= number_format($voucherCount) ?></b></div>
+          <div class="rounded-2xl border border-line p-3">
+            <div class="text-xs text-muted font-bold">Ngày thấp nhất</div>
+            <div class="text-sm font-extrabold"><?= money_vnd($minDay) ?></div>
+          </div>
+          <div class="rounded-2xl border border-line p-3">
+            <div class="text-xs text-muted font-bold">TB / ngày</div>
+            <div class="text-sm font-extrabold"><?= money_vnd($avgDay) ?></div>
+          </div>
         </div>
       </div>
 
-      <!-- CHART + STATUS -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex justify-between items-center mb-4">
-            <div>
-              <div class="text-lg font-extrabold text-slate-900">Biểu đồ doanh thu</div>
-              <div class="text-sm text-slate-500"><?= h(dateRangeLabel($range)) ?> (theo ngày)</div>
-            </div>
-            <div class="text-xs text-slate-500">
-              Nguồn: <b>donhang</b>
-            </div>
-          </div>
-
-          <div class="w-full aspect-[2.5/1]">
-            <svg class="w-full h-full overflow-visible" viewBox="0 0 500 200" preserveAspectRatio="none">
-              <line x1="0" y1="0" x2="500" y2="0" stroke="#f1f5f9" stroke-width="1"></line>
-              <line x1="0" y1="50" x2="500" y2="50" stroke="#f1f5f9" stroke-width="1"></line>
-              <line x1="0" y1="100" x2="500" y2="100" stroke="#f1f5f9" stroke-width="1"></line>
-              <line x1="0" y1="150" x2="500" y2="150" stroke="#f1f5f9" stroke-width="1"></line>
-              <line x1="0" y1="200" x2="500" y2="200" stroke="#f1f5f9" stroke-width="1"></line>
-
-              <defs>
-                <linearGradient id="chartGradientNew" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#137fec" stop-opacity="0.20"></stop>
-                  <stop offset="100%" stop-color="#137fec" stop-opacity="0"></stop>
-                </linearGradient>
-              </defs>
-
-              <!-- area -->
-              <?php
-                // area path: line path + đóng đáy
-                $area = $path;
-                $area .= " L480,180 L20,180 Z"; // đáy tương đối, ok cho demo
-              ?>
-              <path d="<?= h($area) ?>" fill="url(#chartGradientNew)"></path>
-              <path d="<?= h($path) ?>" fill="none" stroke="#137fec" stroke-width="3" stroke-linecap="round"></path>
-            </svg>
-
-            <div class="flex justify-between mt-3 text-xs text-slate-400 font-medium">
-              <?php
-                $show = min(7, count($labels));
-                if ($show<=1) { echo "<span>{$labels[0]}</span>"; }
-                else{
-                  // hiển thị tối đa 7 mốc đều nhau
-                  $n=count($labels);
-                  for($i=0;$i<$show;$i++){
-                    $idx = (int)round($i*($n-1)/($show-1));
-                    echo "<span>".h($labels[$idx])."</span>";
-                  }
-                }
-              ?>
-            </div>
-          </div>
-
-          <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div class="p-3 rounded-xl bg-gray-50 border border-gray-200">
-              <div class="text-xs text-slate-500">Tổng</div>
-              <div class="font-extrabold"><?= money(array_sum($vals)) ?></div>
-            </div>
-            <div class="p-3 rounded-xl bg-gray-50 border border-gray-200">
-              <div class="text-xs text-slate-500">Ngày cao nhất</div>
-              <div class="font-extrabold"><?= money(max($vals)) ?></div>
-            </div>
-            <div class="p-3 rounded-xl bg-gray-50 border border-gray-200">
-              <div class="text-xs text-slate-500">Ngày thấp nhất</div>
-              <div class="font-extrabold"><?= money(min($vals)) ?></div>
-            </div>
-            <div class="p-3 rounded-xl bg-gray-50 border border-gray-200">
-              <div class="text-xs text-slate-500">TB / ngày</div>
-              <div class="font-extrabold"><?= money(count($vals)? (int)round(array_sum($vals)/count($vals)) : 0) ?></div>
-            </div>
-          </div>
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between">
+          <div class="text-base font-extrabold">Trạng thái đơn</div>
+          <span class="material-symbols-outlined text-amber-600">info</span>
         </div>
 
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex items-center gap-2 mb-4">
-            <span class="material-symbols-outlined text-warning">donut_small</span>
-            <div class="text-lg font-extrabold">Trạng thái đơn</div>
-          </div>
-
+        <div class="mt-4 space-y-4">
           <?php if(!$DH_STATUS): ?>
-            <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm text-slate-600">
-              Bảng donhang không có cột trạng_thái nên chưa thống kê được.
-            </div>
+            <div class="text-sm text-muted font-bold">Bảng donhang không có cột trạng_thái.</div>
           <?php elseif(!$statusRows): ?>
-            <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm text-slate-600">
-              Không có dữ liệu trong khoảng.
-            </div>
+            <div class="text-sm text-muted font-bold">Chưa có dữ liệu trong kỳ.</div>
           <?php else: ?>
-            <div class="space-y-2">
-              <?php
-                $sumStatus = 0;
-                foreach($statusRows as $sr) $sumStatus += (int)$sr['c'];
-                foreach($statusRows as $sr):
-                  $c = (int)$sr['c'];
-                  $pct = $sumStatus>0 ? (int)round($c*100/$sumStatus) : 0;
-              ?>
-                <div class="flex items-center justify-between text-sm">
-                  <div class="font-bold text-slate-700 truncate max-w-[160px]"><?= h($sr['st'] ?? 'N/A') ?></div>
-                  <div class="text-slate-500 font-extrabold"><?= number_format($c) ?> (<?= $pct ?>%)</div>
+            <?php
+              $sumSt = array_sum(array_map(fn($r)=>(int)$r['c'], $statusRows));
+              foreach($statusRows as $r):
+                $stt = (string)$r['st'];
+                $c = (int)$r['c'];
+                $pct = $sumSt>0 ? round(($c/$sumSt)*100) : 0;
+            ?>
+              <div>
+                <div class="flex items-center justify-between text-sm font-extrabold">
+                  <div class="uppercase"><?= h($stt) ?></div>
+                  <div class="text-muted"><?= number_format($c) ?> (<?= $pct ?>%)</div>
                 </div>
-                <div class="h-2 rounded-full bg-gray-100 overflow-hidden">
-                  <div class="h-full bg-primary" style="width:<?= $pct ?>%"></div>
+                <div class="mt-2 h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div class="h-2 bg-primary" style="width: <?= (int)$pct ?>%"></div>
                 </div>
-              <?php endforeach; ?>
-            </div>
+              </div>
+            <?php endforeach; ?>
           <?php endif; ?>
         </div>
-
       </div>
-
-      <!-- TOP + STOCK -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex items-center justify-between mb-4">
-            <div class="text-lg font-extrabold">Bán chạy nhất</div>
-            <div class="text-xs text-slate-500">
-              <?php if(!$ctTable): ?>Thiếu bảng chi tiết đơn<?php else: ?>Nguồn: <?= h($ctTable) ?><?php endif; ?>
-            </div>
-          </div>
-
-          <?php if(!$topProducts): ?>
-            <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm text-slate-600">
-              Chưa đủ bảng/cột để thống kê (cần ct_donhang + sanpham).
-            </div>
-          <?php else: ?>
-            <div class="space-y-3">
-              <?php foreach($topProducts as $p): ?>
-                <div class="flex items-center gap-3 p-3 rounded-2xl border border-gray-200 hover:bg-gray-50">
-                  <div class="size-12 rounded-xl bg-gray-100 border border-gray-200 overflow-hidden flex items-center justify-center">
-                    <?php if(!empty($p['hinh'])): ?>
-                      <img class="w-full h-full object-cover" src="../assets/img/<?= h($p['hinh']) ?>" alt="">
-                    <?php else: ?>
-                      <span class="material-symbols-outlined text-slate-400">photo</span>
-                    <?php endif; ?>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <div class="font-extrabold truncate"><?= h($p['ten']) ?></div>
-                    <div class="text-xs text-slate-500">ID: <?= (int)$p['id'] ?></div>
-                  </div>
-                  <div class="text-right">
-                    <div class="font-extrabold text-slate-900"><?= number_format((int)$p['qty']) ?></div>
-                    <div class="text-xs text-slate-500">đã bán</div>
-                  </div>
-                </div>
-              <?php endforeach; ?>
-            </div>
-          <?php endif; ?>
-        </div>
-
-        <div class="bg-white p-6 rounded-2xl shadow-soft border border-gray-100">
-          <div class="flex items-center justify-between mb-4">
-            <div class="text-lg font-extrabold">Tồn kho thấp</div>
-            <div class="text-xs text-slate-500">
-              <?php if(!$tonTable): ?>Chưa có bảng tonkho<?php else: ?>Nguồn: tonkho<?php endif; ?>
-            </div>
-          </div>
-
-          <?php if(!$lowStock): ?>
-            <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-sm text-slate-600">
-              Nếu bạn muốn báo cáo tồn kho: cần bảng <b>tonkho</b> có cột <b>id_san_pham</b> và <b>so_luong</b>.
-            </div>
-          <?php else: ?>
-            <div class="space-y-3">
-              <?php foreach($lowStock as $p): ?>
-                <div class="flex items-center gap-3 p-3 rounded-2xl border border-gray-200 hover:bg-gray-50">
-                  <div class="size-12 rounded-xl bg-gray-100 border border-gray-200 overflow-hidden flex items-center justify-center">
-                    <?php if(!empty($p['hinh'])): ?>
-                      <img class="w-full h-full object-cover" src="../assets/img/<?= h($p['hinh']) ?>" alt="">
-                    <?php else: ?>
-                      <span class="material-symbols-outlined text-slate-400">inventory_2</span>
-                    <?php endif; ?>
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <div class="font-extrabold truncate"><?= h($p['ten']) ?></div>
-                    <div class="text-xs text-slate-500">ID: <?= (int)$p['id'] ?></div>
-                  </div>
-                  <div class="text-right">
-                    <div class="font-extrabold text-danger"><?= number_format((int)$p['so_luong']) ?></div>
-                    <div class="text-xs text-slate-500">còn lại</div>
-                  </div>
-                </div>
-              <?php endforeach; ?>
-            </div>
-          <?php endif; ?>
-        </div>
-
-      </div>
-
-      <!-- TECH NOTE -->
-      <div class="bg-white p-5 rounded-2xl shadow-soft border border-gray-100 text-xs text-slate-500">
-        <b>Nguồn dữ liệu</b>:
-        donhang(<?= h($DH_DATE) ?>, <?= h($DH_TOTAL) ?><?= $DH_STATUS? ", $DH_STATUS":"" ?>)
-        <?= $ctTable ? " • $ctTable" : "" ?>
-        <?= $hasSP ? " • sanpham" : "" ?>
-        <?= $tonTable ? " • tonkho" : "" ?>
-        <?= $userTable ? " • $userTable" : "" ?>
-        <?= $voucherTable ? " • $voucherTable" : "" ?>
-      </div>
-
     </div>
+
+    <!-- Best sellers + Low stock -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between">
+          <div class="text-base font-extrabold">Bán chạy nhất</div>
+          <div class="text-xs text-muted font-bold"><?= $bestNote ? h($bestNote) : '' ?></div>
+        </div>
+
+        <div class="mt-4 space-y-3">
+          <?php if(!$best): ?>
+            <div class="text-sm text-muted font-bold"><?= $bestNote ? h($bestNote) : 'Chưa có dữ liệu bán chạy.' ?></div>
+          <?php else: ?>
+            <?php foreach($best as $b):
+              $img = (string)($b['_img'] ?? '');
+              $ten = (string)($b['ten'] ?? ('SP #'.(int)$b['id_sp']));
+              $qty = (int)($b['so_luong'] ?? 0);
+              $gia = $b['_gia'] ?? null;
+              $doanhthu = (float)($b['doanh_thu'] ?? 0);
+            ?>
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div class="size-12 rounded-2xl bg-slate-100 overflow-hidden grid place-items-center">
+                    <?php if($img): ?>
+                      <img src="<?= h($img) ?>" class="w-full h-full object-cover" alt="">
+                    <?php else: ?>
+                      <span class="material-symbols-outlined text-slate-500">image</span>
+                    <?php endif; ?>
+                  </div>
+                  <div>
+                    <div class="text-sm font-extrabold"><?= h($ten) ?></div>
+                    <div class="text-xs text-muted font-bold">
+                      SL: <?= number_format($qty) ?>
+                      <?php if($gia!==null): ?> · Giá: <?= money_vnd($gia) ?><?php endif; ?>
+                    </div>
+                  </div>
+                </div>
+                <div class="text-sm font-extrabold"><?= money_vnd($doanhthu) ?></div>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between">
+          <div class="text-base font-extrabold">Tồn kho thấp</div>
+          <div class="text-xs text-muted font-bold">Ngưỡng: <?= (int)$lowStock ?></div>
+        </div>
+
+        <div class="mt-4 space-y-3">
+          <?php if(!$low): ?>
+            <div class="text-sm text-muted font-bold"><?= $lowNote ? h($lowNote) : 'Không có sản phẩm tồn thấp trong ngưỡng.' ?></div>
+          <?php else: ?>
+            <?php foreach($low as $r):
+              $img = (string)($r['_img'] ?? '');
+              $ten = (string)($r['_ten'] ?? ('SP #'.(int)$r['id_sp']));
+              $qty = (int)($r['so_luong'] ?? 0);
+            ?>
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div class="size-12 rounded-2xl bg-slate-100 overflow-hidden grid place-items-center">
+                    <?php if($img): ?>
+                      <img src="<?= h($img) ?>" class="w-full h-full object-cover" alt="">
+                    <?php else: ?>
+                      <span class="material-symbols-outlined text-slate-500">inventory_2</span>
+                    <?php endif; ?>
+                  </div>
+                  <div>
+                    <div class="text-sm font-extrabold"><?= h($ten) ?></div>
+                    <div class="text-xs text-muted font-bold">ID: <?= (int)$r['id_sp'] ?></div>
+                  </div>
+                </div>
+                <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $qty<=max(1,(int)($lowStock/2)) ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700' ?>">
+                  <?= number_format($qty) ?>
+                </span>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+
   </div>
-</main>
-</body>
-</html>
+</div>
+
+<!-- Chart.js (CDN). Nếu máy bạn offline thì chart sẽ không hiện nhưng phần số liệu vẫn chạy -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+  const el = document.getElementById('revChart');
+  if(!el || typeof Chart==='undefined') return;
+
+  const labels = <?= json_encode($labels, JSON_UNESCAPED_UNICODE) ?>;
+  const cur = <?= json_encode($dataCur, JSON_UNESCAPED_UNICODE) ?>;
+  const prev = <?= json_encode($dataPrev, JSON_UNESCAPED_UNICODE) ?>;
+
+  new Chart(el, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Tháng này',
+          data: cur,
+          tension: 0.35,
+          borderWidth: 3,
+          pointRadius: 3
+        },
+        {
+          label: 'Tháng trước',
+          data: prev,
+          tension: 0.35,
+          borderWidth: 2,
+          pointRadius: 0,
+          borderDash: [6,6]
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', align: 'end' },
+        tooltip: { callbacks: {
+          label: (ctx)=> {
+            const v = Number(ctx.raw||0);
+            return ctx.dataset.label + ': ' + v.toLocaleString('vi-VN') + ' ₫';
+          }
+        }}
+      },
+      scales: {
+        y: { ticks: {
+          callback: (v)=> Number(v).toLocaleString('vi-VN')
+        }},
+        x: { grid: { display:false } }
+      }
+    }
+  });
+})();
+</script>
+
+<?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; ?>

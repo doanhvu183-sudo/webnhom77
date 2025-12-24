@@ -1,353 +1,393 @@
 <?php
+// admin/tonkho.php
 session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once __DIR__ . '/includes/helpers.php';
 
-if (!isset($_SESSION['admin'])) {
-  header("Location: dangnhap.php");
-  exit;
-}
+if (empty($_SESSION['admin'])) { header("Location: dang_nhap.php"); exit; }
+[$me,$myId,$vaiTro,$isAdmin] = auth_me();
 
-function tableExists(PDO $pdo, string $table): bool {
-  $st = $pdo->prepare("SHOW TABLES LIKE ?");
-  $st->execute([$table]);
-  return (bool)$st->fetchColumn();
-}
-function describeTable(PDO $pdo, string $table): array {
-  $rows = $pdo->query("DESCRIBE `$table`")->fetchAll(PDO::FETCH_ASSOC);
-  $map = [];
-  foreach ($rows as $r) $map[$r['Field']] = $r;
-  return $map;
-}
-function pickCol(array $descMap, array $candidates): ?string {
-  foreach ($candidates as $c) if (isset($descMap[$c])) return $c;
-  return null;
-}
-function firstIdCol(array $descMap): ?string {
-  foreach ($descMap as $field => $meta) {
-    if (stripos($field, 'id_') === 0 || $field === 'id') return $field;
+$ACTIVE = 'tonkho';
+$PAGE_TITLE = 'Quản lý Tồn kho';
+requirePermission('tonkho');
+
+/* ===== validate tables ===== */
+$fatal = false;
+if (!tableExists($pdo,'tonkho')) $fatal = true;
+
+$TK_ID = $TK_SPID = $TK_QTY = $TK_UPD = null;
+$SP_ID = $SP_NAME = $SP_IMG = $SP_COST = $SP_PRICE = null;
+
+if(!$fatal){
+  $tkCols = getCols($pdo,'tonkho');
+  $TK_ID   = pickCol($tkCols, ['id_tonkho','id']);
+  $TK_SPID = pickCol($tkCols, ['id_san_pham','sanpham_id','id_sp']);
+  $TK_QTY  = pickCol($tkCols, ['so_luong','ton','qty','quantity']);
+  $TK_UPD  = pickCol($tkCols, ['ngay_cap_nhat','updated_at']);
+
+  if(!$TK_ID || !$TK_SPID || !$TK_QTY){
+    $fatal = true;
   }
-  return array_key_first($descMap) ?: null;
-}
-function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
-
-if (!tableExists($pdo, 'sanpham')) die("Thiếu bảng sanpham.");
-if (!tableExists($pdo, 'tonkho')) die("Thiếu bảng tonkho.");
-
-$descSP = describeTable($pdo, 'sanpham');
-$descTK = describeTable($pdo, 'tonkho');
-$descDM = tableExists($pdo, 'danhmuc') ? describeTable($pdo, 'danhmuc') : [];
-
-$SP_ID   = pickCol($descSP, ['id_san_pham','id_sanpham','id_sp','id']) ?? firstIdCol($descSP);
-$SP_NAME = pickCol($descSP, ['ten_san_pham','ten','ten_sp','tieu_de']);
-$SP_CAT  = pickCol($descSP, ['id_danh_muc','id_danhmuc','id_dm','ma_danh_muc']);
-$SP_IMG  = pickCol($descSP, ['hinh_anh','image','anh','thumb']);
-$SP_PRICE= pickCol($descSP, ['gia','gia_ban','don_gia','price']);
-
-$DM_ID   = $descDM ? (pickCol($descDM, ['id_danh_muc','id_danhmuc','id_dm','id']) ?? firstIdCol($descDM)) : null;
-$DM_NAME = $descDM ? pickCol($descDM, ['ten_danh_muc','ten','ten_dm','tieu_de']) : null;
-
-$TK_ID = pickCol($descTK, ['id_tonkho','id']) ?? firstIdCol($descTK);
-$TK_SP = pickCol($descTK, ['id_san_pham','id_sanpham','id_sp']);
-$TK_QTY= pickCol($descTK, ['so_luong','ton','qty','quantity']);
-$TK_UPD= pickCol($descTK, ['ngay_cap_nhat','updated_at','updated']);
-
-if (!$TK_SP || !$TK_QTY) die("Bảng tonkho thiếu cột id_san_pham/so_luong.");
-
-/* load categories map */
-$dmMap = [];
-if ($descDM && $DM_ID && $DM_NAME) {
-  $rows = $pdo->query("SELECT `$DM_ID`,`$DM_NAME` FROM danhmuc")->fetchAll(PDO::FETCH_ASSOC);
-  foreach ($rows as $r) $dmMap[(string)$r[$DM_ID]] = $r[$DM_NAME];
 }
 
-$success = '';
-$error = '';
+$spOk = tableExists($pdo,'sanpham');
+if($spOk){
+  $spCols = getCols($pdo,'sanpham');
+  $SP_ID    = pickCol($spCols, ['id_san_pham','id']);
+  $SP_NAME  = pickCol($spCols, ['ten_san_pham','ten','name']);
+  $SP_IMG   = pickCol($spCols, ['hinh_anh','anh','image']);
+  $SP_COST  = pickCol($spCols, ['gia_nhap','gia_von','cost']);
+  $SP_PRICE = pickCol($spCols, ['gia','gia_ban','price']);
+}
 
-/* ACTION: set stock / adjust */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['capnhat_ton'])) {
-  $spId = (int)($_POST['sp_id'] ?? 0);
-  $mode = $_POST['mode'] ?? 'set';
-  $val  = (int)($_POST['value'] ?? 0);
+/* ===== helpers redirect ===== */
+function go_tonkho($params=[]){
+  redirectWith('tonkho.php', $params);
+}
 
-  if ($spId <= 0) {
-    $error = "Sản phẩm không hợp lệ.";
-  } else {
-    try {
-      // check existing row
-      $st = $pdo->prepare("SELECT `$TK_ID`, `$TK_QTY` FROM tonkho WHERE `$TK_SP`=? LIMIT 1");
-      $st->execute([$spId]);
-      $row = $st->fetch(PDO::FETCH_ASSOC);
+/* ================= POST actions (MUST be before render) ================= */
+if(!$fatal && $_SERVER['REQUEST_METHOD']==='POST'){
+  $action = $_POST['action'] ?? '';
 
-      if (!$row) {
-        // insert row
-        $qty = ($mode === 'add') ? max(0, $val) : (($mode === 'sub') ? max(0, -$val) : max(0, $val));
-        // if sub on empty => 0
-        if ($mode === 'sub') $qty = 0;
-
-        $sql = "INSERT INTO tonkho (`$TK_SP`,`$TK_QTY`".($TK_UPD? ",`$TK_UPD`":"").") VALUES (?,?,".($TK_UPD? "NOW()":"").")";
-        if (!$TK_UPD) $sql = "INSERT INTO tonkho (`$TK_SP`,`$TK_QTY`) VALUES (?,?)";
-        $pdo->prepare($sql)->execute([$spId, $qty]);
-
-        $success = "Đã tạo tồn kho cho SP #$spId (tồn: $qty).";
-      } else {
-        $curQty = (int)$row[$TK_QTY];
-        if ($mode === 'add') $newQty = max(0, $curQty + $val);
-        elseif ($mode === 'sub') $newQty = max(0, $curQty - $val);
-        else $newQty = max(0, $val);
-
-        $sql = "UPDATE tonkho SET `$TK_QTY`=?".($TK_UPD? ", `$TK_UPD`=NOW()":"")." WHERE `$TK_SP`=? LIMIT 1";
-        $pdo->prepare($sql)->execute([$newQty, $spId]);
-
-        $success = "Đã cập nhật tồn kho SP #$spId: $curQty → $newQty.";
-      }
-    } catch (Throwable $e) {
-      $error = "Lỗi cập nhật tồn kho: ".$e->getMessage();
+  // tạo bản ghi tồn cho SP chưa có trong tonkho
+  if($action==='tao_ton'){
+    if(!$spOk || !$SP_ID){
+      go_tonkho(['type'=>'error','msg'=>'Thiếu bảng/cột sanpham để tạo tồn.']);
     }
+    // Tạo tồn = 0 cho SP chưa có
+    $sql = "
+      INSERT INTO tonkho($TK_SPID, $TK_QTY".($TK_UPD?(", $TK_UPD"):"").")
+      SELECT sp.$SP_ID, 0".($TK_UPD?(", NOW()"):"")."
+      FROM sanpham sp
+      LEFT JOIN tonkho tk ON tk.$TK_SPID = sp.$SP_ID
+      WHERE tk.$TK_SPID IS NULL
+    ";
+    $pdo->exec($sql);
+
+    nhatky_log($pdo,'TAO_TON_KHO','Tạo bản ghi tồn kho cho các sản phẩm chưa có','tonkho',null,[]);
+    go_tonkho(['type'=>'ok','msg'=>'Đã tạo bản ghi tồn (0) cho sản phẩm chưa có.']);
   }
+
+  // cập nhật tồn
+  if($action==='cap_nhat'){
+    $id_tonkho = (int)($_POST['id_tonkho'] ?? 0);
+    $newQty = (int)($_POST['so_luong'] ?? 0);
+
+    if($id_tonkho<=0) go_tonkho(['type'=>'error','msg'=>'Thiếu ID tồn kho.']);
+
+    // lấy cũ để log
+    $st = $pdo->prepare("SELECT $TK_SPID, $TK_QTY FROM tonkho WHERE $TK_ID=? LIMIT 1");
+    $st->execute([$id_tonkho]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if(!$row) go_tonkho(['type'=>'error','msg'=>'Bản ghi tồn kho không tồn tại.']);
+
+    $id_sp = (int)$row[$TK_SPID];
+    $oldQty = (int)$row[$TK_QTY];
+
+    $upd = "UPDATE tonkho SET $TK_QTY=?, ".($TK_UPD?("$TK_UPD=NOW(), "):"")."$TK_ID=$TK_ID WHERE $TK_ID=?";
+    // fix query gọn:
+    $upd = $TK_UPD
+      ? "UPDATE tonkho SET $TK_QTY=?, $TK_UPD=NOW() WHERE $TK_ID=?"
+      : "UPDATE tonkho SET $TK_QTY=? WHERE $TK_ID=?";
+
+    $pdo->prepare($upd)->execute([$newQty,$id_tonkho]);
+
+    nhatky_log(
+      $pdo,
+      'CAP_NHAT_TON_KHO',
+      "Cập nhật tồn SP #{$id_sp}: {$oldQty} → {$newQty}",
+      'tonkho',
+      $id_sp,
+      ['old'=>$oldQty,'new'=>$newQty]
+    );
+
+    go_tonkho(['type'=>'ok','msg'=>'Đã cập nhật tồn kho.','xem'=>$id_tonkho]);
+  }
+
+  go_tonkho(['type'=>'error','msg'=>'Action không hợp lệ.']);
 }
 
-/* filters */
+/* ================= filters/list ================= */
 $q = trim($_GET['q'] ?? '');
-$filter = $_GET['filter'] ?? '';
-$low = max(1, (int)($_GET['low'] ?? 5));
+$page = max(1,(int)($_GET['page'] ?? 1));
+$perPage = 12;
+$offset = ($page-1)*$perPage;
 
-$where = [];
-$params = [];
-if ($q !== '' && $SP_NAME) {
-  $where[] = "sp.`$SP_NAME` LIKE ?";
-  $params[] = "%$q%";
-}
-if ($filter === 'out') {
-  $where[] = "IFNULL(tk.`$TK_QTY`,0) <= 0";
-}
-if ($filter === 'low') {
-  $where[] = "IFNULL(tk.`$TK_QTY`,0) > 0 AND IFNULL(tk.`$TK_QTY`,0) <= ?";
-  $params[] = $low;
-}
-$whereSql = $where ? ("WHERE ".implode(" AND ", $where)) : "";
+$lowStock = (int)get_setting($pdo,'low_stock_threshold',5);
 
-/* list */
-$limit = 40;
-$page = max(1, (int)($_GET['page'] ?? 1));
-$offset = ($page-1)*$limit;
+$rows = [];
+$total = 0;
+$totalPages = 1;
 
-$sql = "SELECT sp.`$SP_ID` AS sp_id, sp.`$SP_NAME` AS sp_ten"
-     . ($SP_CAT ? ", sp.`$SP_CAT` AS sp_dm" : "")
-     . ($SP_IMG ? ", sp.`$SP_IMG` AS sp_img" : "")
-     . ($SP_PRICE ? ", sp.`$SP_PRICE` AS sp_gia" : "")
-     . ", IFNULL(tk.`$TK_QTY`,0) AS ton"
-     . " FROM sanpham sp"
-     . " LEFT JOIN tonkho tk ON tk.`$TK_SP` = sp.`$SP_ID`"
-     . " $whereSql"
-     . " ORDER BY ton ASC, sp.`$SP_ID` DESC"
-     . " LIMIT $limit OFFSET $offset";
-$st = $pdo->prepare($sql);
-$st->execute($params);
-$list = $st->fetchAll(PDO::FETCH_ASSOC);
+if(!$fatal){
+  $where = " WHERE 1 ";
+  $params = [];
 
-$st = $pdo->prepare("SELECT COUNT(*) FROM sanpham sp LEFT JOIN tonkho tk ON tk.`$TK_SP`=sp.`$SP_ID` $whereSql");
-$st->execute($params);
-$totalRows = (int)$st->fetchColumn();
-$totalPages = max(1, (int)ceil($totalRows/$limit));
-
-/* stats */
-$totalSP = (int)$pdo->query("SELECT COUNT(*) FROM sanpham")->fetchColumn();
-$totalTon = (int)$pdo->query("SELECT IFNULL(SUM(`$TK_QTY`),0) FROM tonkho")->fetchColumn();
-$outCount = (int)$pdo->query("SELECT COUNT(*) FROM sanpham sp LEFT JOIN tonkho tk ON tk.`$TK_SP`=sp.`$SP_ID` WHERE IFNULL(tk.`$TK_QTY`,0)<=0")->fetchColumn();
-$lowCount = (int)$pdo->prepare("SELECT COUNT(*) FROM sanpham sp LEFT JOIN tonkho tk ON tk.`$TK_SP`=sp.`$SP_ID` WHERE IFNULL(tk.`$TK_QTY`,0)>0 AND IFNULL(tk.`$TK_QTY`,0)<=?")->execute([$low]) ? (int)$pdo->query("SELECT 0")->fetchColumn() : 0;
-// workaround because execute() returns bool; do a separate query:
-$st = $pdo->prepare("SELECT COUNT(*) FROM sanpham sp LEFT JOIN tonkho tk ON tk.`$TK_SP`=sp.`$SP_ID` WHERE IFNULL(tk.`$TK_QTY`,0)>0 AND IFNULL(tk.`$TK_QTY`,0)<=?");
-$st->execute([$low]);
-$lowCount = (int)$st->fetchColumn();
-?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Admin - Tồn kho</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<script>
-tailwind.config = {
-  theme: {
-    extend: {
-      colors: { primary:"#137fec", success:"#10b981", warning:"#f59e0b", danger:"#ef4444" },
-      fontFamily: { display:["Manrope","sans-serif"] },
-      boxShadow: { soft:"0 4px 20px -2px rgba(0,0,0,0.06)" }
+  if($q!==''){
+    $conds = [];
+    // search theo id_sp / tên sp
+    if (ctype_digit($q)) {
+      $conds[] = "tk.$TK_SPID = ?";
+      $params[] = (int)$q;
     }
+    if($spOk && $SP_NAME){
+      $conds[] = "sp.$SP_NAME LIKE ?";
+      $params[] = "%$q%";
+    }
+    if($conds) $where .= " AND (".implode(" OR ",$conds).") ";
   }
+
+  $countSql = "SELECT COUNT(*) FROM tonkho tk ".($spOk && $SP_ID ? "LEFT JOIN sanpham sp ON sp.$SP_ID = tk.$TK_SPID " : "")." $where";
+  $st = $pdo->prepare($countSql);
+  $st->execute($params);
+  $total = (int)$st->fetchColumn();
+  $totalPages = max(1,(int)ceil($total/$perPage));
+
+  $fields = [
+    "tk.$TK_ID AS id_tonkho",
+    "tk.$TK_SPID AS id_san_pham",
+    "tk.$TK_QTY AS so_luong",
+  ];
+  if($TK_UPD) $fields[] = "tk.$TK_UPD AS cap_nhat";
+
+  if($spOk && $SP_ID){
+    if($SP_NAME)  $fields[] = "sp.$SP_NAME AS ten_san_pham";
+    if($SP_IMG)   $fields[] = "sp.$SP_IMG AS hinh_anh";
+    if($SP_COST)  $fields[] = "sp.$SP_COST AS gia_nhap";
+    if($SP_PRICE) $fields[] = "sp.$SP_PRICE AS gia_ban";
+  }
+
+  $sql = "SELECT ".implode(", ",$fields)."
+          FROM tonkho tk
+          ".($spOk && $SP_ID ? "LEFT JOIN sanpham sp ON sp.$SP_ID = tk.$TK_SPID" : "")."
+          $where
+          ORDER BY ".($TK_UPD ? "tk.$TK_UPD" : "tk.$TK_ID")." DESC
+          LIMIT $perPage OFFSET $offset";
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
 }
-</script>
-<style>
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
-::-webkit-scrollbar-thumb:hover{background:#94a3b8}
-</style>
-</head>
 
-<body class="font-display bg-slate-100 text-slate-800 min-h-screen">
-<div class="max-w-7xl mx-auto p-4 md:p-8 space-y-6">
+/* view */
+$viewId = (int)($_GET['xem'] ?? 0);
+$view = null;
+if(!$fatal && $viewId>0){
+  $fields = ["tk.*"];
+  if($spOk && $SP_ID){
+    if($SP_NAME)  $fields[] = "sp.$SP_NAME AS ten_san_pham";
+    if($SP_IMG)   $fields[] = "sp.$SP_IMG AS hinh_anh";
+    if($SP_COST)  $fields[] = "sp.$SP_COST AS gia_nhap";
+    if($SP_PRICE) $fields[] = "sp.$SP_PRICE AS gia_ban";
+  }
+  $sql = "SELECT ".implode(", ",$fields)."
+          FROM tonkho tk
+          ".($spOk && $SP_ID ? "LEFT JOIN sanpham sp ON sp.$SP_ID = tk.$TK_SPID" : "")."
+          WHERE tk.$TK_ID=? LIMIT 1";
+  $st = $pdo->prepare($sql);
+  $st->execute([$viewId]);
+  $view = $st->fetch(PDO::FETCH_ASSOC);
+}
 
-  <div class="flex items-center justify-between gap-3 flex-wrap">
+/* flash */
+$type = $_GET['type'] ?? '';
+$msg  = $_GET['msg'] ?? '';
+
+require_once __DIR__ . '/includes/giaoDienDau.php';
+require_once __DIR__ . '/includes/thanhben.php';
+require_once __DIR__ . '/includes/thanhTren.php';
+?>
+
+<?php if($fatal): ?>
+  <div class="bg-white rounded-2xl border border-line shadow-card p-6">
+    <div class="text-xl font-extrabold">Thiếu cấu trúc bảng tồn kho</div>
+    <div class="text-slate-600 mt-2">Cần bảng <b>tonkho</b> có các cột: <b>id_tonkho</b>, <b>id_san_pham</b>, <b>so_luong</b> (và <b>ngay_cap_nhat</b> nếu có).</div>
+  </div>
+
+<?php else: ?>
+
+  <?php if($msg): ?>
+    <div class="mb-5 bg-white rounded-2xl border border-line shadow-card p-4">
+      <div class="font-bold <?= $type==='ok'?'text-green-600':($type==='error'?'text-red-600':'text-slate-700') ?>">
+        <?= h($msg) ?>
+      </div>
+    </div>
+  <?php endif; ?>
+
+  <div class="flex items-center justify-between mb-5">
     <div>
-      <h1 class="text-2xl font-extrabold">Kho / Tồn kho</h1>
-      <p class="text-sm text-slate-500">Quản lý tồn theo sản phẩm (set tồn, +/- nhanh, lọc hết hàng/low stock).</p>
+      <div class="text-2xl font-extrabold">Tồn kho</div>
+      <div class="text-sm text-muted font-bold">Theo dõi & chỉnh sửa số lượng tồn (log vào nhatky_hoatdong)</div>
     </div>
-    <div class="flex gap-2">
-      <a href="sanpham.php" class="px-4 py-2 rounded-xl border bg-white hover:bg-slate-50 font-extrabold">Sản phẩm</a>
-      <a href="index.php" class="px-4 py-2 rounded-xl border bg-white hover:bg-slate-50 font-extrabold">Dashboard</a>
-    </div>
-  </div>
 
-  <?php if ($success): ?>
-    <div class="p-3 rounded-xl bg-green-50 border border-green-200 text-green-700 font-bold text-sm"><?= h($success) ?></div>
-  <?php endif; ?>
-  <?php if ($error): ?>
-    <div class="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-bold text-sm"><?= h($error) ?></div>
-  <?php endif; ?>
-
-  <!-- STATS -->
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-    <div class="bg-white rounded-2xl shadow-soft border p-5">
-      <div class="text-sm text-slate-500 font-bold">Tổng sản phẩm</div>
-      <div class="text-2xl font-extrabold mt-1"><?= number_format($totalSP) ?></div>
-    </div>
-    <div class="bg-white rounded-2xl shadow-soft border p-5">
-      <div class="text-sm text-slate-500 font-bold">Tổng tồn</div>
-      <div class="text-2xl font-extrabold mt-1"><?= number_format($totalTon) ?></div>
-    </div>
-    <div class="bg-white rounded-2xl shadow-soft border p-5">
-      <div class="text-sm text-slate-500 font-bold">Hết hàng</div>
-      <div class="text-2xl font-extrabold mt-1 text-danger"><?= number_format($outCount) ?></div>
-    </div>
-    <div class="bg-white rounded-2xl shadow-soft border p-5">
-      <div class="text-sm text-slate-500 font-bold">Low stock (<= <?= (int)$low ?>)</div>
-      <div class="text-2xl font-extrabold mt-1 text-warning"><?= number_format($lowCount) ?></div>
-    </div>
-  </div>
-
-  <!-- FILTER -->
-  <div class="bg-white rounded-2xl shadow-soft border p-5">
-    <form class="flex flex-wrap gap-2 items-center">
-      <span class="material-symbols-outlined text-slate-400">search</span>
-      <input name="q" value="<?= h($q) ?>" class="border rounded-xl px-3 py-2 text-sm w-72" placeholder="Tìm tên sản phẩm...">
-
-      <select name="filter" class="border rounded-xl px-3 py-2 text-sm">
-        <option value="" <?= $filter===''?'selected':'' ?>>Tất cả</option>
-        <option value="out" <?= $filter==='out'?'selected':'' ?>>Hết hàng</option>
-        <option value="low" <?= $filter==='low'?'selected':'' ?>>Low stock</option>
-      </select>
-
-      <input name="low" value="<?= (int)$low ?>" class="border rounded-xl px-3 py-2 text-sm w-28" inputmode="numeric" placeholder="Ngưỡng">
-      <button class="px-4 py-2 rounded-xl bg-primary text-white font-extrabold">Lọc</button>
-      <a href="tonkho.php" class="px-4 py-2 rounded-xl border bg-white hover:bg-slate-50 font-extrabold">Reset</a>
+    <form method="post" class="flex gap-2">
+      <input type="hidden" name="action" value="tao_ton">
+      <button class="px-4 py-2 rounded-xl bg-white border border-line shadow-card font-extrabold hover:bg-slate-50">
+        Tạo tồn cho SP chưa có
+      </button>
     </form>
   </div>
 
-  <!-- LIST -->
-  <div class="bg-white rounded-2xl shadow-soft border p-6 overflow-hidden">
-    <div class="overflow-x-auto border rounded-xl">
-      <table class="w-full text-sm">
-        <thead class="bg-slate-50 text-xs uppercase font-extrabold">
-          <tr>
-            <th class="p-3 text-left">SP</th>
-            <th class="p-3 text-left">Danh mục</th>
-            <th class="p-3 text-right">Giá</th>
-            <th class="p-3 text-right">Tồn</th>
-            <th class="p-3 text-right">Điều chỉnh</th>
-          </tr>
-        </thead>
-        <tbody>
-          <?php if (empty($list)): ?>
-            <tr><td class="p-4 text-center text-slate-500" colspan="5">Không có dữ liệu.</td></tr>
-          <?php else: ?>
-            <?php foreach ($list as $r): ?>
-              <?php
-                $id = (int)$r['sp_id'];
-                $ton = (int)$r['ton'];
-                $dmName = '-';
-                if ($SP_CAT && $DM_ID && $DM_NAME && isset($r['sp_dm']) && $r['sp_dm'] !== null) {
-                  $dmName = $dmMap[(string)$r['sp_dm']] ?? ('#'.$r['sp_dm']);
-                }
-              ?>
-              <tr class="border-t">
-                <td class="p-3">
-                  <div class="flex items-center gap-3">
-                    <?php if ($SP_IMG && !empty($r['sp_img'])): ?>
-                      <img src="../assets/img/<?= h($r['sp_img']) ?>" class="w-10 h-10 object-contain border rounded-lg bg-white" onerror="this.style.display='none'">
-                    <?php endif; ?>
-                    <div class="min-w-0">
-                      <div class="font-extrabold">#<?= $id ?> - <?= h($r['sp_ten'] ?? '') ?></div>
-                      <div class="text-xs text-slate-500">ID sản phẩm: <?= $id ?></div>
-                    </div>
-                  </div>
-                </td>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-                <td class="p-3"><?= h($dmName) ?></td>
+    <!-- LEFT: LIST -->
+    <div class="lg:col-span-2 bg-white rounded-2xl border border-line shadow-card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div class="font-extrabold">Danh sách tồn kho</div>
+        <div class="text-xs text-muted font-bold">Tổng: <?= number_format($total) ?></div>
+      </div>
 
-                <td class="p-3 text-right font-extrabold">
-                  <?= isset($r['sp_gia']) && $r['sp_gia'] !== null ? number_format((int)$r['sp_gia']).'₫' : '-' ?>
-                </td>
+      <form method="get" class="flex gap-2 mb-4">
+        <input name="q" value="<?= h($q) ?>" class="flex-1 rounded-xl bg-slate-100 border-0 focus:ring-2 focus:ring-primary/30" placeholder="Tìm ID sản phẩm / tên sản phẩm..." />
+        <button class="px-4 rounded-xl bg-primary text-white font-extrabold">Lọc</button>
+      </form>
 
-                <td class="p-3 text-right font-extrabold <?= $ton<=0?'text-danger':'' ?>">
-                  <?= number_format($ton) ?>
-                </td>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="text-muted">
+            <tr>
+              <th class="text-left py-3 pr-3">Ảnh</th>
+              <th class="text-left py-3 pr-3">Sản phẩm</th>
+              <th class="text-right py-3 pr-3">Tồn</th>
+              <th class="text-left py-3 pr-3">Cập nhật</th>
+              <th class="text-right py-3">Thao tác</th>
+            </tr>
+          </thead>
 
-                <td class="p-3 text-right whitespace-nowrap">
-                  <!-- SET -->
-                  <form method="post" class="inline-flex items-center gap-2">
-                    <input type="hidden" name="capnhat_ton" value="1">
-                    <input type="hidden" name="sp_id" value="<?= $id ?>">
-                    <input type="hidden" name="mode" value="set">
-                    <input name="value" value="<?= $ton ?>" class="w-24 border rounded-xl px-3 py-2 text-sm text-right" inputmode="numeric">
-                    <button class="px-3 py-2 rounded-xl bg-primary text-white font-extrabold">Set</button>
-                  </form>
+          <tbody class="divide-y divide-line">
+          <?php foreach($rows as $r): 
+            $img = (!empty($r['hinh_anh'])) ? "../assets/img/".h($r['hinh_anh']) : "";
+            $name = (string)($r['ten_san_pham'] ?? ('SP #'.$r['id_san_pham']));
+            $qty  = (int)($r['so_luong'] ?? 0);
+            $extra = "ID: ".$r['id_san_pham']." | Giá nhập: ".money_vnd((int)($r['gia_nhap'] ?? 0))." | Giá bán: ".money_vnd((int)($r['gia_ban'] ?? 0));
+            $isLow = ($qty <= $lowStock);
+          ?>
+            <tr class="hover:bg-slate-50"
+                data-preview-img="<?= $img ?>"
+                data-preview-name="<?= h($name) ?>"
+                data-preview-extra="<?= h($extra) ?>">
+              <td class="py-3 pr-3">
+                <div class="size-10 rounded-xl bg-slate-100 border border-line overflow-hidden grid place-items-center">
+                  <?php if($img): ?>
+                    <img src="<?= $img ?>" class="w-full h-full object-cover" alt="">
+                  <?php else: ?>
+                    <span class="material-symbols-outlined text-slate-400">photo</span>
+                  <?php endif; ?>
+                </div>
+              </td>
 
-                  <!-- + / - quick -->
-                  <form method="post" class="inline-flex items-center gap-2 ml-2">
-                    <input type="hidden" name="capnhat_ton" value="1">
-                    <input type="hidden" name="sp_id" value="<?= $id ?>">
-                    <input type="hidden" name="mode" value="add">
-                    <input type="hidden" name="value" value="1">
-                    <button class="px-3 py-2 rounded-xl border bg-white hover:bg-slate-50 font-extrabold">+1</button>
-                  </form>
+              <td class="py-3 pr-3">
+                <div class="font-extrabold truncate max-w-[420px]"><?= h($name) ?></div>
+                <div class="text-xs text-muted font-bold">SP #<?= (int)$r['id_san_pham'] ?></div>
+              </td>
 
-                  <form method="post" class="inline-flex items-center gap-2 ml-1">
-                    <input type="hidden" name="capnhat_ton" value="1">
-                    <input type="hidden" name="sp_id" value="<?= $id ?>">
-                    <input type="hidden" name="mode" value="sub">
-                    <input type="hidden" name="value" value="1">
-                    <button class="px-3 py-2 rounded-xl border bg-white hover:bg-slate-50 font-extrabold">-1</button>
-                  </form>
-                </td>
-              </tr>
-            <?php endforeach; ?>
+              <td class="py-3 pr-3 text-right">
+                <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $isLow?'bg-red-50 text-red-600':'bg-green-50 text-green-700' ?>">
+                  <?= number_format($qty) ?>
+                </span>
+              </td>
+
+              <td class="py-3 pr-3 text-xs text-muted font-bold">
+                <?= h($r['cap_nhat'] ?? '') ?>
+              </td>
+
+              <td class="py-3 text-right">
+                <a class="px-3 py-2 rounded-xl bg-slate-100 font-extrabold hover:bg-slate-200"
+                   href="tonkho.php?<?= h(http_build_query(array_merge($_GET,['xem'=>(int)$r['id_tonkho']])) ) ?>">
+                  Chỉnh
+                </a>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+
+          <?php if(!$rows): ?>
+            <tr><td colspan="5" class="py-8 text-center text-muted font-bold">Chưa có dữ liệu tồn kho.</td></tr>
           <?php endif; ?>
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex items-center justify-between mt-4">
+        <div class="text-xs text-muted font-bold">Trang <?= $page ?>/<?= $totalPages ?></div>
+        <div class="flex gap-2">
+          <?php
+            $qs = $_GET;
+            $mk = function($p) use ($qs){ $qs['page']=$p; return 'tonkho.php?'.http_build_query($qs); };
+          ?>
+          <a class="px-3 py-2 rounded-xl border bg-white font-extrabold <?= $page<=1?'opacity-40 pointer-events-none':'' ?>"
+             href="<?= h($mk(max(1,$page-1))) ?>">Trước</a>
+          <a class="px-3 py-2 rounded-xl border bg-white font-extrabold <?= $page>=$totalPages?'opacity-40 pointer-events-none':'' ?>"
+             href="<?= h($mk(min($totalPages,$page+1))) ?>">Sau</a>
+        </div>
+      </div>
     </div>
 
-    <!-- PAGINATION -->
-    <div class="flex items-center justify-between mt-4 text-sm">
-      <div class="text-slate-500">
-        Trang <b><?= $page ?></b> / <b><?= $totalPages ?></b> — Tổng <b><?= $totalRows ?></b>
+    <!-- RIGHT: PREVIEW + EDIT -->
+    <div class="space-y-6">
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="font-extrabold mb-3">Xem nhanh (hover)</div>
+        <div class="flex gap-3">
+          <div class="w-24 h-24 rounded-2xl bg-slate-100 border border-line overflow-hidden grid place-items-center">
+            <img id="hoverPreviewImg" src="" class="w-full h-full object-cover" alt="">
+          </div>
+          <div class="min-w-0">
+            <div id="hoverPreviewName" class="font-extrabold truncate">Di chuột vào dòng bên trái</div>
+            <div id="hoverPreviewExtra" class="text-xs text-muted font-bold mt-1"></div>
+          </div>
+        </div>
       </div>
-      <div class="flex gap-2">
-        <?php
-          $base = "tonkho.php?q=".urlencode($q)."&filter=".urlencode($filter)."&low=".(int)$low."&page=";
-        ?>
-        <a class="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 font-extrabold <?= $page<=1?'opacity-50 pointer-events-none':'' ?>"
-           href="<?= $base.($page-1) ?>">Trước</a>
-        <a class="px-3 py-2 rounded-lg border bg-white hover:bg-slate-50 font-extrabold <?= $page>=$totalPages?'opacity-50 pointer-events-none':'' ?>"
-           href="<?= $base.($page+1) ?>">Sau</a>
+
+      <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div class="text-lg font-extrabold"><?= $view ? 'Chỉnh tồn' : 'Chọn 1 sản phẩm' ?></div>
+          <?php if($view): ?><a href="tonkho.php" class="text-primary font-extrabold">Bỏ chọn</a><?php endif; ?>
+        </div>
+
+        <?php if(!$view): ?>
+          <div class="text-sm text-muted font-bold">Chọn “Chỉnh” ở danh sách để sửa tồn.</div>
+        <?php else: ?>
+          <?php
+            $id_tk = (int)($view[$TK_ID] ?? 0);
+            $id_sp = (int)($view[$TK_SPID] ?? 0);
+            $qty   = (int)($view[$TK_QTY] ?? 0);
+            $name  = (string)($view['ten_san_pham'] ?? ('SP #'.$id_sp));
+            $img   = (!empty($view['hinh_anh'])) ? "../assets/img/".h($view['hinh_anh']) : "";
+          ?>
+
+          <div class="flex items-center gap-3 mb-4">
+            <div class="size-14 rounded-2xl bg-slate-100 border border-line overflow-hidden grid place-items-center">
+              <?php if($img): ?><img src="<?= $img ?>" class="w-full h-full object-cover" alt="">
+              <?php else: ?><span class="material-symbols-outlined text-slate-400">photo</span><?php endif; ?>
+            </div>
+            <div class="min-w-0">
+              <div class="font-extrabold truncate"><?= h($name) ?></div>
+              <div class="text-xs text-muted font-bold">ID tồn kho: #<?= $id_tk ?> • SP #<?= $id_sp ?></div>
+            </div>
+          </div>
+
+          <form method="post" class="space-y-3">
+            <input type="hidden" name="action" value="cap_nhat">
+            <input type="hidden" name="id_tonkho" value="<?= $id_tk ?>">
+
+            <div>
+              <label class="text-sm font-extrabold">Số lượng tồn</label>
+              <input type="number" name="so_luong" value="<?= $qty ?>"
+                     class="mt-1 w-full rounded-xl bg-slate-100 border-0 focus:ring-2 focus:ring-primary/30">
+              <div class="text-xs text-muted font-bold mt-2">
+                Gợi ý: nếu bạn trừ tồn theo “Hoàn tất đơn”, tồn ở đây sẽ tự giảm khi đổi trạng thái.
+              </div>
+            </div>
+
+            <button class="w-full px-4 py-3 rounded-2xl bg-primary text-white font-extrabold hover:opacity-90">
+              Lưu tồn kho
+            </button>
+          </form>
+        <?php endif; ?>
       </div>
+
     </div>
   </div>
 
-</div>
-</body>
-</html>
+<?php endif; ?>
+
+<?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; ?>

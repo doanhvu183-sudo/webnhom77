@@ -1,153 +1,608 @@
 <?php
+// admin/tong_quan.php
 session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once __DIR__ . '/includes/hamChung.php';   // ✅ thêm dòng này
 
-/* ====== BẢO VỆ ADMIN ====== */
-if (!isset($_SESSION['admin'])) {
-    header('Location: dang_nhap.php');
-    exit;
-}
+requirePermission('tong_quan');
+$ACTIVE = 'tong_quan';
+$PAGE_TITLE = 'Bảng điều khiển';
 
-/* ====== TRUY VẤN DỮ LIỆU THẬT ====== */
+require_once __DIR__ . '/includes/giaoDienDau.php';
+require_once __DIR__ . '/includes/thanhBen.php';
+require_once __DIR__ . '/includes/thanhTren.php';
 
-// Doanh thu hôm nay
-$doanhThuHomNay = $pdo->query("
-    SELECT IFNULL(SUM(tong_thanh_toan),0)
-    FROM donhang
-    WHERE DATE(ngay_dat) = CURDATE()
-")->fetchColumn();
+requirePermission('tong_quan');
 
-// Doanh thu hôm qua
-$doanhThuHomQua = $pdo->query("
-    SELECT IFNULL(SUM(tong_thanh_toan),0)
-    FROM donhang
-    WHERE DATE(ngay_dat) = CURDATE() - INTERVAL 1 DAY
-")->fetchColumn();
-
-// Tổng đơn
-$tongDon = $pdo->query("SELECT COUNT(*) FROM donhang")->fetchColumn();
-
-// Đơn chờ xử lý
-$donChoXuLy = $pdo->query("
-    SELECT COUNT(*) FROM donhang WHERE trang_thai = 'CHO_XU_LY'
-")->fetchColumn();
-
-// Tổng tồn kho
-$tongTonKho = $pdo->query("
-    SELECT IFNULL(SUM(so_luong),0) FROM sanpham
-")->fetchColumn();
-
-// SP sắp hết (<=5)
-$spSapHet = $pdo->query("
-    SELECT COUNT(*) FROM sanpham WHERE so_luong <= 5
-")->fetchColumn();
-
-
-?>
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Admin – Tổng quan</title>
-
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet"/>
-<script src="https://cdn.tailwindcss.com"></script>
-
-<script>
-tailwind.config = {
-  theme: {
-    extend: {
-      fontFamily: { display: ['Manrope', 'sans-serif'] },
-      colors: {
-        primary: '#137fec',
-        success: '#10b981',
-        warning: '#f59e0b',
-        danger: '#ef4444'
-      }
-    }
+/* ================= Fallback get_setting ================= */
+if (!function_exists('get_setting')) {
+  function get_setting(PDO $pdo, string $key, $default=null) {
+    if (!tableExists($pdo, 'cai_dat')) return $default;
+    $cols = getCols($pdo,'cai_dat');
+    $K = pickCol($cols, ['khoa','key','ten']);
+    $V = pickCol($cols, ['gia_tri','value','noi_dung']);
+    if(!$K || !$V) return $default;
+    $st = $pdo->prepare("SELECT $V FROM cai_dat WHERE $K=? LIMIT 1");
+    $st->execute([$key]);
+    $v = $st->fetchColumn();
+    return ($v===false || $v===null || $v==='') ? $default : $v;
   }
 }
+
+/* ================= Detect schema ================= */
+if (!tableExists($pdo,'donhang')) {
+  echo "<div class='p-6 bg-white rounded-2xl border border-line'>Thiếu bảng <b>donhang</b>.</div>";
+  
+  exit;
+}
+
+$dhCols = getCols($pdo,'donhang');
+$DH_ID     = pickCol($dhCols, ['id_don_hang']);
+$DH_CODE   = pickCol($dhCols, ['ma_don_hang']);
+$DH_TOTAL  = pickCol($dhCols, ['tong_thanh_toan','tong_tien']);
+$DH_STATUS = pickCol($dhCols, ['trang_thai']);
+$DH_DATE   = pickCol($dhCols, ['ngay_dat','ngay_tao','created_at']);
+$DH_UPD    = pickCol($dhCols, ['ngay_cap_nhat','updated_at']);
+if(!$DH_ID) die("Bảng donhang thiếu cột id_don_hang.");
+
+$ctOk = tableExists($pdo,'chitiet_donhang');
+$ctCols = $ctOk ? getCols($pdo,'chitiet_donhang') : [];
+$CT_IDDH  = $ctOk ? pickCol($ctCols, ['id_don_hang']) : null;
+$CT_IDSP  = $ctOk ? pickCol($ctCols, ['id_san_pham']) : null;
+$CT_NAME  = $ctOk ? pickCol($ctCols, ['ten_san_pham']) : null;
+$CT_QTY   = $ctOk ? pickCol($ctCols, ['so_luong']) : null;
+$CT_PRICE = $ctOk ? pickCol($ctCols, ['don_gia']) : null;
+$CT_TOTAL = $ctOk ? pickCol($ctCols, ['thanh_tien']) : null;
+
+$spOk = tableExists($pdo,'sanpham');
+$spCols = $spOk ? getCols($pdo,'sanpham') : [];
+$SP_ID    = $spOk ? pickCol($spCols, ['id_san_pham','id']) : null;
+$SP_NAME  = $spOk ? pickCol($spCols, ['ten_san_pham','ten']) : null;
+$SP_IMG   = $spOk ? pickCol($spCols, ['hinh_anh','anh']) : null;
+$SP_QTY   = $spOk ? pickCol($spCols, ['so_luong','ton_kho']) : null;
+$SP_COST  = $spOk ? pickCol($spCols, ['gia_nhap','gia_von','cost']) : null;
+
+$tkOk = tableExists($pdo,'tonkho');
+$tkCols = $tkOk ? getCols($pdo,'tonkho') : [];
+$TK_QTY = $tkOk ? pickCol($tkCols, ['so_luong']) : null;
+
+$dateCol = $DH_DATE ?: ($DH_UPD ?: null);
+$totalCol = $DH_TOTAL ?: null;
+$statusCol = $DH_STATUS ?: null;
+
+/* ================= Conditions =================
+  - Cancel: LIKE '%huy%' OR '%cancel%'
+  - Completed: LIKE '%hoan%' OR '%complete%'
+*/
+function sql_is_cancelled(string $col): string {
+  return "(LOWER($col) LIKE '%huy%' OR LOWER($col) LIKE '%cancel%')";
+}
+function sql_is_completed(string $col): string {
+  return "(LOWER($col) LIKE '%hoan%' OR LOWER($col) LIKE '%complete%')";
+}
+function sql_is_processing(string $col): string {
+  return "NOT ".sql_is_cancelled($col)." AND NOT ".sql_is_completed($col);
+}
+
+/* ================= KPI calculations ================= */
+$today = date('Y-m-d');
+$yesterday = date('Y-m-d', strtotime('-1 day'));
+
+$revenueToday = 0;
+$revenueYesterday = 0;
+$orderToday = 0;
+$processingCount = 0;
+$profitToday = 0;
+$profitMargin = null;
+
+if ($dateCol && $totalCol) {
+  // revenue today (exclude cancelled)
+  $sql = "SELECT IFNULL(SUM($totalCol),0) FROM donhang WHERE DATE($dateCol)=? ";
+  $params = [$today];
+  if ($statusCol) $sql .= " AND NOT ".sql_is_cancelled($statusCol);
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $revenueToday = (int)$st->fetchColumn();
+
+  // revenue yesterday
+  $sql = "SELECT IFNULL(SUM($totalCol),0) FROM donhang WHERE DATE($dateCol)=? ";
+  $params = [$yesterday];
+  if ($statusCol) $sql .= " AND NOT ".sql_is_cancelled($statusCol);
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $revenueYesterday = (int)$st->fetchColumn();
+}
+
+if ($dateCol) {
+  // orders today (exclude cancelled)
+  $sql = "SELECT COUNT(*) FROM donhang WHERE DATE($dateCol)=? ";
+  $params = [$today];
+  if ($statusCol) $sql .= " AND NOT ".sql_is_cancelled($statusCol);
+  $st = $pdo->prepare($sql);
+  $st->execute($params);
+  $orderToday = (int)$st->fetchColumn();
+}
+
+if ($statusCol) {
+  $sql = "SELECT COUNT(*) FROM donhang WHERE ".sql_is_processing($statusCol);
+  $st = $pdo->prepare($sql);
+  $st->execute();
+  $processingCount = (int)$st->fetchColumn();
+}
+
+/* ===== Gross profit (today, completed only, requires chi_tiet + gia_nhap) ===== */
+$profitOk = $ctOk && $CT_IDDH && $CT_IDSP && $CT_QTY && $CT_PRICE && $spOk && $SP_ID && $SP_COST;
+if ($profitOk && $dateCol && $statusCol) {
+  $sql = "
+    SELECT IFNULL(SUM( (ct.$CT_PRICE - sp.$SP_COST) * ct.$CT_QTY ),0) AS gp
+    FROM chitiet_donhang ct
+    JOIN donhang d ON d.$DH_ID = ct.$CT_IDDH
+    JOIN sanpham sp ON sp.$SP_ID = ct.$CT_IDSP
+    WHERE DATE(d.$dateCol)=?
+      AND ".sql_is_completed("d.$statusCol")."
+  ";
+  $st = $pdo->prepare($sql);
+  $st->execute([$today]);
+  $profitToday = (int)$st->fetchColumn();
+
+  if ($revenueToday > 0) {
+    $profitMargin = round(($profitToday / $revenueToday) * 100, 1);
+  }
+}
+
+/* ===== Stock total + low stock ===== */
+$lowThreshold = (int)get_setting($pdo, 'low_stock_threshold', 5);
+$totalStock = 0;
+$lowStockCount = 0;
+$lowStockList = [];
+
+try {
+  if ($tkOk && $TK_QTY) {
+    $st = $pdo->prepare("SELECT IFNULL(SUM($TK_QTY),0) FROM tonkho");
+    $st->execute();
+    $totalStock = (int)$st->fetchColumn();
+  } elseif ($spOk && $SP_QTY) {
+    $st = $pdo->prepare("SELECT IFNULL(SUM($SP_QTY),0) FROM sanpham");
+    $st->execute();
+    $totalStock = (int)$st->fetchColumn();
+  }
+
+  if ($spOk && $SP_QTY && $SP_NAME && $SP_ID) {
+    $st = $pdo->prepare("SELECT COUNT(*) FROM sanpham WHERE $SP_QTY <= ?");
+    $st->execute([$lowThreshold]);
+    $lowStockCount = (int)$st->fetchColumn();
+
+    $selImg = ($SP_IMG ? ", $SP_IMG AS img" : ", NULL AS img");
+    $st = $pdo->prepare("
+      SELECT $SP_ID AS id, $SP_NAME AS ten, $SP_QTY AS qty $selImg
+      FROM sanpham
+      WHERE $SP_QTY <= ?
+      ORDER BY $SP_QTY ASC
+      LIMIT 5
+    ");
+    $st->execute([$lowThreshold]);
+    $lowStockList = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  }
+} catch(Throwable $e) {}
+
+/* ===== Trends ===== */
+function pct_change(int $now, int $prev): float {
+  if ($prev <= 0) return ($now>0 ? 100.0 : 0.0);
+  return round((($now - $prev) / $prev) * 100, 1);
+}
+$revPct = pct_change($revenueToday, $revenueYesterday);
+
+/* ================= Chart revenue: this month vs last month ================= */
+$chartOk = ($dateCol && $totalCol);
+$labels = [];
+$curData = [];
+$prevData = [];
+
+if ($chartOk) {
+  $year = (int)date('Y');
+  $month = (int)date('m');
+  $startCur = sprintf('%04d-%02d-01', $year, $month);
+  $startPrev = date('Y-m-01', strtotime('-1 month', strtotime($startCur)));
+  $endCur = date('Y-m-t', strtotime($startCur));
+  $endPrev = date('Y-m-t', strtotime($startPrev));
+
+  $daysInCur = (int)date('t', strtotime($startCur));
+  for ($d=1;$d<=$daysInCur;$d++){
+    $labels[] = str_pad((string)$d,2,'0',STR_PAD_LEFT);
+    $curData[] = 0;
+    $prevData[] = 0;
+  }
+
+  $condCancel = ($statusCol ? " AND NOT ".sql_is_cancelled($statusCol) : "");
+
+  // current month
+  $st = $pdo->prepare("
+    SELECT DAY($dateCol) AS d, IFNULL(SUM($totalCol),0) AS v
+    FROM donhang
+    WHERE DATE($dateCol) BETWEEN ? AND ?
+    $condCancel
+    GROUP BY DAY($dateCol)
+    ORDER BY DAY($dateCol)
+  ");
+  $st->execute([$startCur, $endCur]);
+  foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+    $idx = (int)$r['d'] - 1;
+    if ($idx>=0 && $idx<count($curData)) $curData[$idx] = (int)$r['v'];
+  }
+
+  // previous month (map by day number, fit to current days length)
+  $st = $pdo->prepare("
+    SELECT DAY($dateCol) AS d, IFNULL(SUM($totalCol),0) AS v
+    FROM donhang
+    WHERE DATE($dateCol) BETWEEN ? AND ?
+    $condCancel
+    GROUP BY DAY($dateCol)
+    ORDER BY DAY($dateCol)
+  ");
+  $st->execute([$startPrev, $endPrev]);
+  foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+    $idx = (int)$r['d'] - 1;
+    if ($idx>=0 && $idx<count($prevData)) $prevData[$idx] = (int)$r['v'];
+  }
+}
+
+/* ================= Top selling ================= */
+$topSelling = [];
+if ($ctOk && $CT_IDSP && $CT_QTY && $CT_IDDH && $dateCol && $spOk && $SP_ID && $SP_NAME) {
+  $startCur = date('Y-m-01');
+  $endCur = date('Y-m-t');
+  $condCancel = ($statusCol ? " AND NOT ".sql_is_cancelled("d.$statusCol") : "");
+
+  $imgSel = ($SP_IMG ? ", sp.$SP_IMG AS img" : ", NULL AS img");
+
+  $sql = "
+    SELECT ct.$CT_IDSP AS id_sanpham,
+           COALESCE(sp.$SP_NAME, MAX(ct.$CT_NAME)) AS ten,
+           SUM(ct.$CT_QTY) AS sl
+           $imgSel
+    FROM chitiet_donhang ct
+    JOIN donhang d ON d.$DH_ID = ct.$CT_IDDH
+    LEFT JOIN sanpham sp ON sp.$SP_ID = ct.$CT_IDSP
+    WHERE DATE(d.$dateCol) BETWEEN ? AND ?
+    $condCancel
+    GROUP BY ct.$CT_IDSP
+    ORDER BY sl DESC
+    LIMIT 3
+  ";
+  $st = $pdo->prepare($sql);
+  $st->execute([$startCur, $endCur]);
+  $topSelling = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+  // add delta vs previous month
+  $startPrev = date('Y-m-01', strtotime('-1 month'));
+  $endPrev = date('Y-m-t', strtotime('-1 month'));
+  $prevMap = [];
+
+  $sqlPrev = "
+    SELECT ct.$CT_IDSP AS id_sanpham, SUM(ct.$CT_QTY) AS sl
+    FROM chitiet_donhang ct
+    JOIN donhang d ON d.$DH_ID = ct.$CT_IDDH
+    WHERE DATE(d.$dateCol) BETWEEN ? AND ?
+    $condCancel
+    GROUP BY ct.$CT_IDSP
+  ";
+  $st = $pdo->prepare($sqlPrev);
+  $st->execute([$startPrev, $endPrev]);
+  foreach($st->fetchAll(PDO::FETCH_ASSOC) as $r){
+    $prevMap[(int)$r['id_sanpham']] = (int)$r['sl'];
+  }
+
+  foreach($topSelling as &$t){
+    $id = (int)$t['id_sanpham'];
+    $prev = $prevMap[$id] ?? 0;
+    $cur = (int)$t['sl'];
+    $t['pct'] = ($prev>0) ? round((($cur-$prev)/$prev)*100,1) : ($cur>0 ? 100.0 : 0.0);
+  }
+  unset($t);
+}
+
+/* ================= Recent activity ================= */
+$recentLogs = [];
+if (tableExists($pdo,'nhatky_hoatdong')) {
+  try {
+    $st = $pdo->prepare("
+      SELECT hanh_dong, mo_ta, ngay_tao
+      FROM nhatky_hoatdong
+      ORDER BY ngay_tao DESC
+      LIMIT 6
+    ");
+    $st->execute();
+    $recentLogs = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  } catch(Throwable $e) {}
+}
+
+/* ================= UI Helpers ================= */
+function trend_badge(float $pct): array {
+  if ($pct > 0) return ['bg'=>'bg-green-50','tx'=>'text-green-600','icon'=>'trending_up'];
+  if ($pct < 0) return ['bg'=>'bg-red-50','tx'=>'text-red-600','icon'=>'trending_down'];
+  return ['bg'=>'bg-slate-100','tx'=>'text-slate-600','icon'=>'trending_flat'];
+}
+$revTrend = trend_badge($revPct);
+$stockLabel = ($lowStockCount > 0) ? 'Cảnh báo' : 'Ổn định';
+$stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-100 text-slate-700';
+
+?>
+
+<!-- ===== Hero row ===== -->
+<div class="flex items-start justify-between gap-4 mb-6">
+  <div>
+    <div class="text-sm text-muted font-bold">Chào, <?= h($me['ho_ten'] ?? $me['username'] ?? 'Admin') ?></div>
+    <div class="text-2xl md:text-3xl font-extrabold mt-1">Tổng quan hoạt động hôm nay</div>
+    <div class="text-sm text-muted mt-2">Các chỉ số được lấy trực tiếp từ hệ thống đơn hàng và kho.</div>
+  </div>
+
+  <div class="hidden md:flex items-center gap-2">
+    <div class="px-4 py-2 rounded-xl border border-line bg-white text-sm font-extrabold text-slate-700">
+      Hôm nay
+      <span class="material-symbols-outlined align-middle text-[18px] ml-1 text-slate-500">expand_more</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== KPI Cards ===== -->
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 md:gap-6">
+  <!-- Revenue -->
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div class="size-12 rounded-2xl bg-primary/10 grid place-items-center">
+        <span class="material-symbols-outlined text-primary">paid</span>
+      </div>
+      <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $revTrend['bg'] ?> <?= $revTrend['tx'] ?>">
+        <?= ($revPct>=0?'+':'') . $revPct ?>%
+        <span class="material-symbols-outlined align-middle text-[16px] ml-1"><?= $revTrend['icon'] ?></span>
+      </span>
+    </div>
+    <div class="mt-4 text-sm text-muted font-bold">Doanh thu hôm nay</div>
+    <div class="mt-1 text-2xl font-extrabold"><?= money_vnd($revenueToday) ?></div>
+    <div class="mt-2 text-xs text-muted font-bold">So với hôm qua <?= money_vnd($revenueYesterday) ?></div>
+  </div>
+
+  <!-- Orders -->
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div class="size-12 rounded-2xl bg-purple-50 grid place-items-center">
+        <span class="material-symbols-outlined text-purple-600">shopping_cart</span>
+      </div>
+      <span class="px-3 py-1 rounded-full text-xs font-extrabold bg-green-50 text-green-600">
+        +<?= max(0, $orderToday) ?> <span class="material-symbols-outlined align-middle text-[16px] ml-1">add</span>
+      </span>
+    </div>
+    <div class="mt-4 text-sm text-muted font-bold">Số đơn hàng mới</div>
+    <div class="mt-1 text-2xl font-extrabold"><?= number_format($orderToday) ?></div>
+    <div class="mt-2 text-xs text-muted font-bold">Đơn đang xử lý <?= number_format($processingCount) ?></div>
+  </div>
+
+  <!-- Profit -->
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div class="size-12 rounded-2xl bg-orange-50 grid place-items-center">
+        <span class="material-symbols-outlined text-orange-600">donut_large</span>
+      </div>
+      <?php
+        $pm = ($profitMargin===null ? null : (float)$profitMargin);
+        $pmBadge = $pm===null ? ['bg'=>'bg-slate-100','tx'=>'text-slate-600','txt'=>'Chưa đủ dữ liệu']
+                              : ['bg'=>'bg-slate-100','tx'=>'text-slate-700','txt'=>($pm.'%')];
+      ?>
+      <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $pmBadge['bg'] ?> <?= $pmBadge['tx'] ?>">
+        <?= h($pmBadge['txt']) ?>
+      </span>
+    </div>
+    <div class="mt-4 text-sm text-muted font-bold">Lợi nhuận gộp</div>
+    <div class="mt-1 text-2xl font-extrabold"><?= money_vnd($profitToday) ?></div>
+    <div class="mt-2 text-xs text-muted font-bold">
+      <?= $profitOk ? ('Biên lợi nhuận '.($profitMargin??0).'%') : 'Thiếu cột gia_nhap/chi_tiet để tính' ?>
+    </div>
+  </div>
+
+  <!-- Stock -->
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div class="size-12 rounded-2xl bg-sky-50 grid place-items-center">
+        <span class="material-symbols-outlined text-sky-600">inventory_2</span>
+      </div>
+      <span class="px-3 py-1 rounded-full text-xs font-extrabold <?= $stockLabelCls ?>">
+        <?= h($stockLabel) ?>
+      </span>
+    </div>
+    <div class="mt-4 text-sm text-muted font-bold">Tổng tồn kho</div>
+    <div class="mt-1 text-2xl font-extrabold"><?= number_format($totalStock) ?></div>
+    <div class="mt-2 text-xs text-muted font-bold">Sản phẩm sắp hết <span class="text-danger font-extrabold"><?= number_format($lowStockCount) ?></span></div>
+  </div>
+</div>
+
+<!-- ===== Middle: chart + alerts + top selling ===== -->
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 md:gap-6 mt-6">
+  <!-- Chart -->
+  <div class="xl:col-span-2 bg-white rounded-2xl border border-line shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <div class="text-lg font-extrabold">Biểu đồ doanh thu</div>
+        <div class="text-sm text-muted font-bold mt-1">Tháng này so với tháng trước</div>
+      </div>
+      <div class="flex items-center gap-3 text-xs font-extrabold text-muted">
+        <span class="inline-flex items-center gap-2"><span class="size-2 rounded-full bg-primary inline-block"></span> Tháng này</span>
+        <span class="inline-flex items-center gap-2"><span class="size-2 rounded-full bg-slate-300 inline-block"></span> Tháng trước</span>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <?php if(!$chartOk): ?>
+        <div class="p-6 rounded-2xl border border-line bg-[#fbfdff] text-muted font-bold">
+          Không đủ cột (ngày đặt / tổng tiền) để vẽ biểu đồ.
+        </div>
+      <?php else: ?>
+        <canvas id="revChart" height="120"></canvas>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <!-- Right column -->
+  <div class="flex flex-col gap-4 md:gap-6">
+    <!-- Alerts -->
+    <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-warning">warning</span>
+        <div class="text-lg font-extrabold">Cảnh báo & Chú ý</div>
+      </div>
+
+      <div class="mt-4 space-y-3">
+        <div class="p-4 rounded-2xl border border-red-200 bg-red-50">
+          <div class="flex items-center justify-between">
+            <div class="font-extrabold text-slate-900">Tồn kho thấp (<?= (int)$lowStockCount ?>)</div>
+            <a href="tonkho.php" class="text-sm font-extrabold text-primary hover:underline">Xem</a>
+          </div>
+          <div class="text-sm text-muted font-bold mt-1">
+            Ngưỡng cảnh báo: <?= (int)$lowThreshold ?>.
+          </div>
+          <?php if(!empty($lowStockList)): ?>
+            <div class="mt-3 space-y-2">
+              <?php foreach($lowStockList as $p): ?>
+                <div class="flex items-center justify-between text-sm">
+                  <div class="font-bold truncate pr-2"><?= h($p['ten'] ?? '') ?></div>
+                  <div class="font-extrabold text-danger"><?= (int)($p['qty'] ?? 0) ?></div>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+        </div>
+
+        <div class="p-4 rounded-2xl border border-yellow-200 bg-yellow-50">
+          <div class="flex items-center justify-between">
+            <div class="font-extrabold text-slate-900">Đơn hàng đang xử lý (<?= (int)$processingCount ?>)</div>
+            <a href="donhang.php" class="text-sm font-extrabold text-primary hover:underline">Xem</a>
+          </div>
+          <div class="text-sm text-muted font-bold mt-1">
+            Các đơn chưa hoàn tất/huỷ cần theo dõi tiến độ.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top selling -->
+    <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+      <div class="flex items-center justify-between">
+        <div class="text-lg font-extrabold">Bán chạy nhất</div>
+        <a href="baocao.php" class="text-sm font-extrabold text-primary hover:underline">Xem thêm</a>
+      </div>
+
+      <div class="mt-4 space-y-3">
+        <?php if(empty($topSelling)): ?>
+          <div class="p-4 rounded-2xl border border-line bg-[#fbfdff] text-muted font-bold">
+            Chưa đủ dữ liệu chi tiết đơn hàng để thống kê.
+          </div>
+        <?php else: ?>
+          <?php foreach($topSelling as $t):
+            $img = $t['img'] ?? null;
+            $imgSrc = $img ? ("../assets/img/".h($img)) : null;
+            $pct = (float)($t['pct'] ?? 0);
+            $pctCls = $pct>=0 ? 'text-green-600' : 'text-red-600';
+          ?>
+            <div class="flex items-center gap-3">
+              <?php if($imgSrc): ?>
+                <img src="<?= $imgSrc ?>" data-hover-img="<?= $imgSrc ?>" class="size-11 rounded-xl object-cover border border-line bg-white" alt="">
+              <?php else: ?>
+                <div class="size-11 rounded-xl border border-line bg-[#f1f5f9] grid place-items-center text-slate-400">
+                  <span class="material-symbols-outlined">photo</span>
+                </div>
+              <?php endif; ?>
+
+              <div class="flex-1 min-w-0">
+                <div class="font-extrabold truncate"><?= h($t['ten'] ?? '') ?></div>
+                <div class="text-xs text-muted font-bold"><?= (int)($t['sl'] ?? 0) ?> sản phẩm</div>
+              </div>
+
+              <div class="text-sm font-extrabold <?= $pctCls ?>">
+                <?= ($pct>=0?'+':'') . $pct ?>%
+              </div>
+            </div>
+          <?php endforeach; ?>
+        <?php endif; ?>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Recent activity ===== -->
+<div class="bg-white rounded-2xl border border-line shadow-card p-5 mt-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <div class="text-lg font-extrabold">Hoạt động gần đây</div>
+      <div class="text-sm text-muted font-bold mt-1">Lấy từ bảng nhật ký hoạt động</div>
+    </div>
+    <a href="nhatky.php" class="text-sm font-extrabold text-primary hover:underline">Xem tất cả</a>
+  </div>
+
+  <div class="mt-4">
+    <?php if(empty($recentLogs)): ?>
+      <div class="p-4 rounded-2xl border border-line bg-[#fbfdff] text-muted font-bold">
+        Chưa có dữ liệu nhật ký hoặc chưa tạo bảng <b>nhatky_hoatdong</b>.
+      </div>
+    <?php else: ?>
+      <div class="divide-y divide-line rounded-2xl border border-line overflow-hidden">
+        <?php foreach($recentLogs as $lg): ?>
+          <div class="p-4 flex items-start justify-between gap-4 bg-white">
+            <div class="min-w-0">
+              <div class="font-extrabold"><?= h($lg['hanh_dong'] ?? '') ?></div>
+              <div class="text-sm text-muted font-bold mt-1 truncate"><?= h($lg['mo_ta'] ?? '') ?></div>
+            </div>
+            <div class="text-xs text-muted font-extrabold whitespace-nowrap"><?= h($lg['ngay_tao'] ?? '') ?></div>
+          </div>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<?php if($chartOk): ?>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+  const ctx = document.getElementById('revChart');
+  if(!ctx) return;
+
+  const labels = <?= json_encode($labels, JSON_UNESCAPED_UNICODE) ?>;
+  const cur = <?= json_encode($curData, JSON_UNESCAPED_UNICODE) ?>;
+  const prev = <?= json_encode($prevData, JSON_UNESCAPED_UNICODE) ?>;
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Tháng này', data: cur, tension: 0.35, borderWidth: 3, pointRadius: 0 },
+        { label: 'Tháng trước', data: prev, tension: 0.35, borderWidth: 2, borderDash: [6,6], pointRadius: 0 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.raw || 0;
+              return `${ctx.dataset.label}: ` + new Intl.NumberFormat('vi-VN').format(v) + ' ₫';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+        y: { grid: { color: '#e7edf5' }, ticks: {
+          callback: (v) => new Intl.NumberFormat('vi-VN').format(v)
+        }}
+      }
+    }
+  });
+})();
 </script>
-</head>
+<?php endif; ?>
 
-<body class="font-display bg-slate-100 text-slate-800 h-screen flex">
-
-<!-- SIDEBAR -->
-<aside class="w-64 bg-white border-r p-5 hidden md:flex flex-col">
-    <div class="flex items-center gap-3 mb-8">
-        <div class="w-9 h-9 bg-primary text-white flex items-center justify-center rounded font-extrabold">C</div>
-        <span class="font-extrabold text-lg">Crocs Admin</span>
-    </div>
-
-    <nav class="space-y-2 text-sm font-semibold">
-        <a class="block px-4 py-3 rounded-xl bg-primary text-white" href="#">Tổng quan</a>
-        <a class="block px-4 py-3 rounded-xl hover:bg-slate-100" href="san_pham.php">Sản phẩm</a>
-        <a class="block px-4 py-3 rounded-xl hover:bg-slate-100" href="don_hang.php">Đơn hàng</a>
-        <a class="block px-4 py-3 rounded-xl hover:bg-slate-100" href="khach_hang.php">Khách hàng</a>
-        <a class="block px-4 py-3 rounded-xl hover:bg-slate-100" href="voucher.php">Voucher</a>
-        <a class="block px-4 py-3 rounded-xl hover:bg-slate-100" href="dang_xuat.php">Đăng xuất</a>
-    </nav>
-</aside>
-
-<!-- MAIN -->
-<main class="flex-1 overflow-y-auto">
-
-<!-- TOPBAR -->
-<header class="bg-white border-b h-16 flex items-center justify-between px-6 sticky top-0">
-    <h1 class="text-xl font-extrabold">Bảng điều khiển</h1>
-    <div class="flex items-center gap-4">
-        <span class="material-symbols-outlined">notifications</span>
-        <span class="material-symbols-outlined">account_circle</span>
-    </div>
-</header>
-
-<div class="p-8 space-y-8">
-
-<!-- GREETING -->
-<div>
-    <h2 class="text-2xl font-extrabold">Chào buổi sáng, Admin 👋</h2>
-    <p class="text-slate-500 text-sm">Tổng quan tình hình kinh doanh hôm nay</p>
-</div>
-
-<!-- CARDS -->
-<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-    <div class="bg-white p-6 rounded-2xl shadow">
-        <p class="text-sm text-slate-500">Doanh thu hôm nay</p>
-        <p class="text-2xl font-extrabold text-primary">
-            <?= number_format($doanhThuHomNay) ?> ₫
-        </p>
-        <p class="text-xs text-slate-400 mt-1">Hôm qua <?= number_format($doanhThuHomQua) ?> ₫</p>
-    </div>
-
-    <div class="bg-white p-6 rounded-2xl shadow">
-        <p class="text-sm text-slate-500">Tổng đơn hàng</p>
-        <p class="text-2xl font-extrabold"><?= $tongDon ?></p>
-        <p class="text-xs text-slate-400 mt-1">Chờ xử lý <?= $donChoXuLy ?></p>
-    </div>
-
-    <div class="bg-white p-6 rounded-2xl shadow">
-        <p class="text-sm text-slate-500">Tổng tồn kho</p>
-        <p class="text-2xl font-extrabold"><?= number_format($tongTonKho) ?></p>
-        <p class="text-xs text-danger mt-1">Sắp hết <?= $spSapHet ?> SP</p>
-    </div>
-
-    <div class="bg-white p-6 rounded-2xl shadow">
-        <p class="text-sm text-slate-500">Biên lợi nhuận</p>
-        <p class="text-2xl font-extrabold">~30%</p>
-    </div>
-</div>
-
-<!-- BEST SELL -->
-<div class="bg-white p-6 rounded-2xl shadow">
-    <h3 class="font-extrabold mb-4">Bán chạy nhất</h3>
-    <div class="space-y-3">
-        
-    </div>
-</div>
-
-</div>
-</main>
-</body>
-</html>
+<?php
+require_once __DIR__ . '/includes/giaoDienCuoi.php';
