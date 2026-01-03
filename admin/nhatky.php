@@ -1,286 +1,197 @@
 <?php
+// admin/nhatky.php
 session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 require_once __DIR__ . '/includes/helpers.php';
-require_once __DIR__ . '/includes/giaoDienDau.php';
-require_once __DIR__ . '/includes/thanhBen.php';
-require_once __DIR__ . '/includes/thanhTren.php';
 
-if (empty($_SESSION['admin'])) { header("Location: dang_nhap.php"); exit; }
-[$me,$myId,$vaiTro,$isAdmin] = auth_me();
+require_login_admin();
+requirePermission('nhatky', $pdo);
 
-$ACTIVE='nhatky';
-$title='Nhật ký hoạt động';
+$ACTIVE = 'nhatky';
+$PAGE_TITLE = 'Nhật ký hoạt động';
 
-$TABLE = 'nhatky_hoatdong';
-
-if(!tableExists($pdo,$TABLE)){
-  $rows=[];
-  $total=0;
-} else {
-
-  // ===== Filters (thêm) =====
-  $q = trim((string)($_GET['q'] ?? ''));
-  $hanh_dong = trim((string)($_GET['hanh_dong'] ?? ''));
-  $bang = trim((string)($_GET['bang'] ?? ''));
-  $id_admin_f = trim((string)($_GET['id_admin'] ?? ''));
-  $from = trim((string)($_GET['from'] ?? ''));
-  $to   = trim((string)($_GET['to'] ?? ''));
-
-  $page = max(1,(int)($_GET['page'] ?? 1));
-  $perPage = 25;
-  $offset = ($page-1)*$perPage;
-
-  $where = " WHERE 1 ";
-  $params = [];
-
-  if ($q !== '') {
-    $where .= " AND (hanh_dong LIKE ? OR mo_ta LIKE ? OR bang_lien_quan LIKE ? OR du_lieu_json LIKE ? OR user_agent LIKE ?) ";
-    $params[]="%$q%"; $params[]="%$q%"; $params[]="%$q%"; $params[]="%$q%"; $params[]="%$q%";
-  }
-  if ($hanh_dong !== '') { $where .= " AND hanh_dong = ? "; $params[] = $hanh_dong; }
-  if ($bang !== '')      { $where .= " AND bang_lien_quan = ? "; $params[] = $bang; }
-  if ($id_admin_f !== '' && ctype_digit($id_admin_f)) { $where .= " AND id_admin = ? "; $params[] = (int)$id_admin_f; }
-
-  if ($from !== '') { $where .= " AND DATE(ngay_tao) >= ? "; $params[] = $from; }
-  if ($to   !== '') { $where .= " AND DATE(ngay_tao) <= ? "; $params[] = $to; }
-
-  // Count
-  $st = $pdo->prepare("SELECT COUNT(*) FROM {$TABLE} {$where}");
-  $st->execute($params);
-  $total = (int)$st->fetchColumn();
-
-  // Rows
-  $st = $pdo->prepare("
-    SELECT *
-    FROM {$TABLE}
-    {$where}
-    ORDER BY id_log DESC
-    LIMIT {$perPage} OFFSET {$offset}
-  ");
-  $st->execute($params);
-  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-
-  $totalPages = max(1,(int)ceil($total/$perPage));
-
-  // Distinct (để filter)
-  $hanhList = $pdo->query("SELECT DISTINCT hanh_dong FROM {$TABLE} WHERE hanh_dong IS NOT NULL AND hanh_dong<>'' ORDER BY hanh_dong ASC")->fetchAll(PDO::FETCH_COLUMN);
-  $bangList = $pdo->query("SELECT DISTINCT bang_lien_quan FROM {$TABLE} WHERE bang_lien_quan IS NOT NULL AND bang_lien_quan<>'' ORDER BY bang_lien_quan ASC")->fetchAll(PDO::FETCH_COLUMN);
+if (!tableExists($pdo,'nhatky_hoatdong')) {
+  die("Thiếu bảng nhatky_hoatdong.");
 }
+
+$q = trim((string)($_GET['q'] ?? ''));
+$hanh_dong = trim((string)($_GET['hanh_dong'] ?? ''));
+$bang = trim((string)($_GET['bang'] ?? ''));
+
+$page = max(1,(int)($_GET['page'] ?? 1));
+$limit = 50;
+$offset = ($page-1)*$limit;
+
+$where = [];
+$bind = [];
+
+if ($q !== '') {
+  $where[] = "(mo_ta LIKE :q OR ip LIKE :q OR user_agent LIKE :q OR CAST(id_admin AS CHAR) LIKE :q)";
+  $bind[':q'] = "%$q%";
+}
+if ($hanh_dong !== '') {
+  $where[] = "hanh_dong = :hd";
+  $bind[':hd'] = $hanh_dong;
+}
+if ($bang !== '') {
+  $where[] = "bang_lien_quan = :b";
+  $bind[':b'] = $bang;
+}
+
+$whereSql = $where ? ("WHERE ".implode(" AND ", $where)) : "";
+
+// filter lists
+$actions = $pdo->query("SELECT DISTINCT hanh_dong FROM nhatky_hoatdong ORDER BY hanh_dong ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+$tables  = $pdo->query("SELECT DISTINCT bang_lien_quan FROM nhatky_hoatdong WHERE bang_lien_quan IS NOT NULL AND bang_lien_quan<>'' ORDER BY bang_lien_quan ASC")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
+// count
+$st = $pdo->prepare("SELECT COUNT(*) FROM nhatky_hoatdong $whereSql");
+$st->execute($bind);
+$total = (int)$st->fetchColumn();
+$totalPages = max(1,(int)ceil($total/$limit));
+
+// rows
+$sql = "SELECT * FROM nhatky_hoatdong $whereSql ORDER BY ngay_tao DESC, id_log DESC LIMIT $limit OFFSET $offset";
+$st = $pdo->prepare($sql);
+$st->execute($bind);
+$rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
 require_once __DIR__ . '/includes/giaoDienDau.php';
 require_once __DIR__ . '/includes/thanhben.php';
+require_once __DIR__ . '/includes/thanhTren.php';
 ?>
 
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-  <!-- LEFT: TABLE -->
-  <div class="lg:col-span-2 bg-white border border-slate-100 rounded-2xl shadow-soft p-4 md:p-6">
-    <div class="flex items-start justify-between gap-4">
-      <div>
-        <div class="text-lg font-extrabold">Nhật ký hoạt động</div>
-        <div class="text-xs text-slate-500 font-bold mt-1">Hiển thị đầy đủ cột theo bảng <b><?= h($TABLE) ?></b></div>
-      </div>
-      <div class="text-xs text-slate-500 font-bold">Tổng: <b><?= number_format($total ?? 0) ?></b></div>
+<div class="bg-white rounded-2xl border border-line shadow-card p-5">
+  <div class="flex items-center justify-between gap-3">
+    <div>
+      <div class="text-lg font-extrabold">Nhật ký hoạt động</div>
+      <div class="text-sm text-muted font-bold mt-1">Hiển thị đầy đủ: ai thao tác, hành động, bảng liên quan, JSON, IP, user-agent.</div>
     </div>
 
-    <?php if(!tableExists($pdo,$TABLE)): ?>
-      <div class="mt-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 text-slate-600">
-        Thiếu bảng <b><?= h($TABLE) ?></b>.
-      </div>
-    <?php else: ?>
+    <form class="flex items-center gap-2" method="get">
+      <input name="q" value="<?= h($q) ?>" class="border border-line rounded-xl px-3 py-2 text-sm font-bold w-[260px]" placeholder="Tìm mô tả / IP / id_admin...">
 
-      <!-- FILTERS -->
-      <form method="get" class="mt-4 grid grid-cols-1 md:grid-cols-5 gap-2">
-        <input name="q" value="<?= h($q ?? '') ?>" class="md:col-span-2 rounded-xl border-slate-200 bg-slate-50" placeholder="Tìm nhanh...">
+      <select name="hanh_dong" class="border border-line rounded-xl px-3 py-2 text-sm font-bold">
+        <option value="">Tất cả hành động</option>
+        <?php foreach($actions as $a): ?>
+          <option value="<?= h($a) ?>" <?= $a===$hanh_dong?'selected':'' ?>><?= h($a) ?></option>
+        <?php endforeach; ?>
+      </select>
 
-        <select name="hanh_dong" class="rounded-xl border-slate-200 bg-slate-50">
-          <option value="">Tất cả hành động</option>
-          <?php foreach(($hanhList ?? []) as $x): ?>
-            <option value="<?= h($x) ?>" <?= (($hanh_dong ?? '')===$x?'selected':'') ?>><?= h($x) ?></option>
-          <?php endforeach; ?>
-        </select>
+      <select name="bang" class="border border-line rounded-xl px-3 py-2 text-sm font-bold">
+        <option value="">Tất cả bảng</option>
+        <?php foreach($tables as $t): ?>
+          <option value="<?= h($t) ?>" <?= $t===$bang?'selected':'' ?>><?= h($t) ?></option>
+        <?php endforeach; ?>
+      </select>
 
-        <select name="bang" class="rounded-xl border-slate-200 bg-slate-50">
-          <option value="">Tất cả bảng</option>
-          <?php foreach(($bangList ?? []) as $x): ?>
-            <option value="<?= h($x) ?>" <?= (($bang ?? '')===$x?'selected':'') ?>><?= h($x) ?></option>
-          <?php endforeach; ?>
-        </select>
+      <button class="px-4 py-2 rounded-xl bg-[var(--primary)] text-white font-extrabold text-sm">Lọc</button>
+    </form>
+  </div>
 
-        <input name="id_admin" value="<?= h($id_admin_f ?? '') ?>" class="rounded-xl border-slate-200 bg-slate-50" placeholder="ID admin">
+  <div class="mt-4 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-slate-500">
+          <th class="text-left py-3 pr-3">Thời gian</th>
+          <th class="text-left py-3 pr-3">Người thao tác</th>
+          <th class="text-left py-3 pr-3">Hành động</th>
+          <th class="text-left py-3 pr-3">Mô tả</th>
+          <th class="text-left py-3 pr-3">Bảng</th>
+          <th class="text-left py-3 pr-3">ID bản ghi</th>
+          <th class="text-left py-3 pr-3">IP</th>
+          <th class="text-left py-3 pr-3">JSON</th>
+        </tr>
+      </thead>
 
-        <input type="date" name="from" value="<?= h($from ?? '') ?>" class="rounded-xl border-slate-200 bg-slate-50">
-        <input type="date" name="to" value="<?= h($to ?? '') ?>" class="rounded-xl border-slate-200 bg-slate-50">
-
-        <div class="md:col-span-5 flex gap-2 justify-end">
-          <a href="nhatky.php" class="px-4 py-2 rounded-xl border bg-white font-extrabold text-sm">Xóa lọc</a>
-          <button class="px-4 py-2 rounded-xl bg-primary text-white font-extrabold text-sm">Lọc</button>
-        </div>
-      </form>
-
-      <div class="mt-4 overflow-x-auto">
-        <table class="min-w-full text-sm">
-          <thead>
-            <tr class="text-slate-500">
-              <th class="text-left py-3 pr-3">Thời gian</th>
-              <th class="text-left py-3 pr-3">Ai thao tác</th>
-              <th class="text-left py-3 pr-3">Hành động</th>
-              <th class="text-left py-3 pr-3">Bảng</th>
-              <th class="text-left py-3 pr-3">ID bản ghi</th>
-              <th class="text-left py-3 pr-3">Mô tả</th>
-              <th class="text-left py-3 pr-3">IP</th>
-              <th class="text-right py-3">Xem</th>
-            </tr>
-          </thead>
-
-          <tbody class="divide-y divide-slate-100">
-            <?php foreach($rows as $r):
-              $id_log = (int)($r['id_log'] ?? 0);
-              $aid = $r['id_admin'] ?? '';
-              $vt  = $r['vai_tro'] ?? '';
-              $hd  = $r['hanh_dong'] ?? '';
-              $mo  = $r['mo_ta'] ?? '';
-              $b   = $r['bang_lien_quan'] ?? '';
-              $idb = $r['id_ban_ghi'] ?? '';
-              $js  = $r['du_lieu_json'] ?? '';
-              $ip  = $r['ip'] ?? '';
-              $ua  = $r['user_agent'] ?? '';
-              $t   = $r['ngay_tao'] ?? '';
-              $mo_short = mb_strimwidth((string)$mo,0,60,'...');
-            ?>
-              <tr class="hover:bg-slate-50">
-                <td class="py-3 pr-3 text-xs text-slate-500"><?= h($t) ?></td>
-                <td class="py-3 pr-3 font-extrabold"><?= h(($aid!=='' ? ('#'.$aid) : 'NULL')) ?> <span class="text-xs text-slate-500 font-bold">(<?= h($vt ?: '-') ?>)</span></td>
-                <td class="py-3 pr-3 font-extrabold"><?= h($hd) ?></td>
-                <td class="py-3 pr-3"><?= h($b) ?></td>
-                <td class="py-3 pr-3"><?= h($idb) ?></td>
-                <td class="py-3 pr-3"><?= h($mo_short) ?></td>
-                <td class="py-3 pr-3 text-xs text-slate-500"><?= h($ip) ?></td>
-                <td class="py-3 text-right">
-                  <button type="button"
-                    class="px-3 py-2 rounded-xl border bg-white font-extrabold text-sm hover:bg-slate-50"
-                    onclick="previewLog(this)"
-                    data-id="<?= h($id_log) ?>"
-                    data-time="<?= h($t) ?>"
-                    data-admin="<?= h(($aid!==''?('#'.$aid):'NULL')) ?>"
-                    data-role="<?= h($vt) ?>"
-                    data-action="<?= h($hd) ?>"
-                    data-table="<?= h($b) ?>"
-                    data-record="<?= h($idb) ?>"
-                    data-desc="<?= h($mo) ?>"
-                    data-json="<?= h($js) ?>"
-                    data-ip="<?= h($ip) ?>"
-                    data-ua="<?= h($ua) ?>"
-                  >Chi tiết</button>
-                </td>
-              </tr>
-            <?php endforeach; ?>
-
-            <?php if(!$rows): ?>
-              <tr><td colspan="8" class="py-8 text-center text-slate-500 font-bold">Chưa có log</td></tr>
-            <?php endif; ?>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Pagination -->
-      <?php if(($total ?? 0) > 0): ?>
-      <div class="mt-4 flex items-center justify-between">
-        <div class="text-xs text-slate-500 font-bold">
-          Trang <?= (int)($page ?? 1) ?>/<?= (int)($totalPages ?? 1) ?>
-        </div>
-        <div class="flex gap-2">
+      <tbody class="divide-y divide-slate-100">
+        <?php foreach($rows as $r): ?>
           <?php
-            $qs = $_GET;
-            $mk = function($p) use($qs){
-              $qs['page']=$p;
-              return 'nhatky.php?'.http_build_query($qs);
-            };
-            $cur = (int)($page ?? 1);
-            $maxp = (int)($totalPages ?? 1);
+            $role = (string)($r['vai_tro'] ?? 'admin');
+            $aid  = (int)($r['id_admin'] ?? 0);
+            $actor = ($role === 'nhanvien' ? 'NHÂN VIÊN' : 'ADMIN') . ($aid ? " #$aid" : '');
+            $json = (string)($r['du_lieu_json'] ?? '');
           ?>
-          <a class="px-3 py-2 rounded-xl border bg-white text-sm font-extrabold <?= $cur<=1?'opacity-40 pointer-events-none':'' ?>"
-             href="<?= h($mk(max(1,$cur-1))) ?>">Trước</a>
-          <a class="px-3 py-2 rounded-xl border bg-white text-sm font-extrabold <?= $cur>=$maxp?'opacity-40 pointer-events-none':'' ?>"
-             href="<?= h($mk(min($maxp,$cur+1))) ?>">Sau</a>
-        </div>
-      </div>
-      <?php endif; ?>
+          <tr>
+            <td class="py-3 pr-3 text-xs text-muted font-bold"><?= h($r['ngay_tao'] ?? '') ?></td>
+            <td class="py-3 pr-3 font-extrabold"><?= h($actor) ?></td>
+            <td class="py-3 pr-3">
+              <span class="px-3 py-1 rounded-full text-xs font-extrabold bg-slate-100 text-slate-700">
+                <?= h($r['hanh_dong'] ?? '') ?>
+              </span>
+            </td>
+            <td class="py-3 pr-3 text-muted font-bold"><?= h($r['mo_ta'] ?? '') ?></td>
+            <td class="py-3 pr-3 font-extrabold"><?= h($r['bang_lien_quan'] ?? '') ?></td>
+            <td class="py-3 pr-3 font-extrabold"><?= h($r['id_ban_ghi'] ?? '') ?></td>
+            <td class="py-3 pr-3 text-xs text-muted font-bold"><?= h($r['ip'] ?? '') ?></td>
+            <td class="py-3 pr-3">
+              <?php if($json !== ''): ?>
+                <button
+                  class="px-3 py-2 rounded-xl border border-line text-xs font-extrabold hover:bg-slate-50"
+                  onclick="showJson(<?= (int)$r['id_log'] ?>, <?= json_encode($json, JSON_UNESCAPED_UNICODE) ?>)">
+                  Xem
+                </button>
+              <?php else: ?>
+                <span class="text-xs text-muted font-bold">—</span>
+              <?php endif; ?>
+            </td>
+          </tr>
+        <?php endforeach; ?>
 
-    <?php endif; ?>
+        <?php if(!$rows): ?>
+          <tr><td colspan="8" class="py-8 text-center text-muted font-bold">Chưa có log.</td></tr>
+        <?php endif; ?>
+      </tbody>
+    </table>
   </div>
 
-  <!-- RIGHT: PREVIEW -->
-  <div class="bg-white border border-slate-100 rounded-2xl shadow-soft p-4 md:p-6">
-    <div class="text-sm font-extrabold">Xem nhanh</div>
-    <div class="text-xs text-slate-500 font-bold mt-1">Bấm “Chi tiết” để xem đầy đủ.</div>
-
-    <div class="mt-4 space-y-3">
-      <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-        <div class="text-xs text-slate-500 font-extrabold">Thời gian</div>
-        <div id="pv_time" class="font-extrabold mt-1">—</div>
-      </div>
-
-      <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-        <div class="text-xs text-slate-500 font-extrabold">Ai thao tác</div>
-        <div id="pv_actor" class="font-extrabold mt-1">—</div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-          <div class="text-xs text-slate-500 font-extrabold">Hành động</div>
-          <div id="pv_action" class="font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-          <div class="text-xs text-slate-500 font-extrabold">Bảng</div>
-          <div id="pv_table" class="font-extrabold mt-1">—</div>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-          <div class="text-xs text-slate-500 font-extrabold">ID bản ghi</div>
-          <div id="pv_record" class="font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-          <div class="text-xs text-slate-500 font-extrabold">IP</div>
-          <div id="pv_ip" class="font-extrabold mt-1">—</div>
-        </div>
-      </div>
-
-      <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-        <div class="text-xs text-slate-500 font-extrabold">Mô tả</div>
-        <div id="pv_desc" class="font-bold mt-2 whitespace-pre-wrap text-slate-800">—</div>
-      </div>
-
-      <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-        <div class="text-xs text-slate-500 font-extrabold">Dữ liệu JSON</div>
-        <pre id="pv_json" class="mt-2 text-xs font-bold text-slate-700 whitespace-pre-wrap">—</pre>
-      </div>
-
-      <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-        <div class="text-xs text-slate-500 font-extrabold">User-Agent</div>
-        <div id="pv_ua" class="mt-2 text-xs font-bold text-slate-700 break-words">—</div>
-      </div>
+  <div class="mt-4 flex items-center justify-between">
+    <div class="text-sm text-muted font-bold">Tổng: <?= number_format($total) ?> log</div>
+    <div class="flex items-center gap-2">
+      <?php $prev=max(1,$page-1); $next=min($totalPages,$page+1); ?>
+      <a class="px-3 py-2 rounded-xl border border-line text-sm font-extrabold <?= $page<=1?'opacity-50 pointer-events-none':'' ?>"
+         href="?q=<?= urlencode($q) ?>&hanh_dong=<?= urlencode($hanh_dong) ?>&bang=<?= urlencode($bang) ?>&page=<?= $prev ?>">Trước</a>
+      <div class="px-3 py-2 text-sm font-extrabold">Trang <?= $page ?>/<?= $totalPages ?></div>
+      <a class="px-3 py-2 rounded-xl border border-line text-sm font-extrabold <?= $page>=$totalPages?'opacity-50 pointer-events-none':'' ?>"
+         href="?q=<?= urlencode($q) ?>&hanh_dong=<?= urlencode($hanh_dong) ?>&bang=<?= urlencode($bang) ?>&page=<?= $next ?>">Sau</a>
     </div>
   </div>
+</div>
 
+<!-- Modal JSON -->
+<div id="jsonModal" class="fixed inset-0 bg-black/40 hidden items-center justify-center p-6 z-50">
+  <div class="bg-white rounded-2xl border border-line shadow-card w-full max-w-3xl">
+    <div class="p-4 border-b border-line flex items-center justify-between">
+      <div class="font-extrabold">Chi tiết JSON</div>
+      <button class="size-10 rounded-xl border border-line hover:bg-slate-50 grid place-items-center"
+              onclick="hideJson()">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="p-4">
+      <pre id="jsonPre" class="text-xs bg-slate-50 border border-line rounded-xl p-4 overflow-auto max-h-[60vh]"></pre>
+    </div>
+  </div>
 </div>
 
 <script>
-function previewLog(btn){
-  const admin = (btn.dataset.admin || '—') + (btn.dataset.role ? (' ('+btn.dataset.role+')') : '');
-  document.getElementById('pv_time').textContent   = btn.dataset.time || '—';
-  document.getElementById('pv_actor').textContent  = admin;
-  document.getElementById('pv_action').textContent = btn.dataset.action || '—';
-  document.getElementById('pv_table').textContent  = btn.dataset.table || '—';
-  document.getElementById('pv_record').textContent = btn.dataset.record || '—';
-  document.getElementById('pv_ip').textContent     = btn.dataset.ip || '—';
-  document.getElementById('pv_desc').textContent   = btn.dataset.desc || '—';
-  document.getElementById('pv_json').textContent   = (btn.dataset.json && btn.dataset.json.trim()) ? btn.dataset.json : '—';
-  document.getElementById('pv_ua').textContent     = btn.dataset.ua || '—';
-}
+  function showJson(id, raw){
+    const modal = document.getElementById('jsonModal');
+    const pre = document.getElementById('jsonPre');
+    try {
+      const obj = JSON.parse(raw);
+      pre.textContent = JSON.stringify(obj, null, 2);
+    } catch(e){
+      pre.textContent = raw;
+    }
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  }
+  function hideJson(){
+    const modal = document.getElementById('jsonModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  }
 </script>
 
 <?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; ?>

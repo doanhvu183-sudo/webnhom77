@@ -1,10 +1,12 @@
 <?php
 session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
-
+require_once __DIR__ . '/includes/giaoDienDau.php';
+require_once __DIR__ . '/includes/thanhBen.php';
+require_once __DIR__ . '/includes/thanhTren.php';
 /* ================== AUTH ADMIN ================== */
 if (!isset($_SESSION['admin'])) {
-    header("Location: dangnhap.php");
+    header("Location: dang_nhap.php");
     exit;
 }
 
@@ -392,3 +394,4 @@ tailwind.config = {
 </div>
 </body>
 </html>
+<?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; ?>

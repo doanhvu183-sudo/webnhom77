@@ -1,7 +1,7 @@
 <?php
-// admin/theodoi_gia.php  (VIEW ONLY)
 session_start();
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once __DIR__ . '/includes/hamChung.php';
 
 // fallback nếu dự án dùng $conn
 if (!isset($pdo) && isset($conn) && $conn instanceof PDO) $pdo = $conn;
@@ -12,14 +12,15 @@ $me = $_SESSION['admin'];
 $vaiTro = strtoupper(trim((string)($me['vai_tro'] ?? $me['role'] ?? 'ADMIN')));
 $isAdmin = ($vaiTro === 'ADMIN');
 
-/* ================= Guards: tránh redeclare ================= */
+if (function_exists('requirePermission')) requirePermission('theodoi_gia');
+
+/* ================= Guards ================= */
 if (!function_exists('h')) {
   function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 }
 if (!function_exists('money_vnd')) {
   function money_vnd($n): string {
-    $n = (float)($n ?? 0);
-    return number_format($n, 0, ',', '.') . ' ₫';
+    return number_format((float)($n ?? 0), 0, ',', '.') . ' ₫';
   }
 }
 if (!function_exists('tableExists')) {
@@ -42,31 +43,40 @@ if (!function_exists('pickCol')) {
     return null;
   }
 }
-if (!function_exists('requirePermission')) {
-  // fallback tối thiểu để không lỗi nếu project bạn chưa có hàm
-  function requirePermission(string $key): void { return; }
+function img_src($img){
+  $img = trim((string)$img);
+  if ($img === '') return '';
+  if (preg_match('~^https?://~i', $img)) return $img;
+  if ($img[0] === '/') return $img;
+  return "../assets/img/" . rawurlencode($img);
 }
 
 /* ================= Page meta ================= */
 $ACTIVE = 'theodoi_gia';
 $PAGE_TITLE = 'Theo dõi giá';
-requirePermission('theodoi_gia');
 
 /* ================= Validate ================= */
 $fatalError = null;
 if (!($pdo instanceof PDO)) $fatalError = "Kết nối CSDL không hợp lệ (thiếu \$pdo).";
 
 if (!$fatalError && !tableExists($pdo,'sanpham')) $fatalError = "Thiếu bảng <b>sanpham</b>.";
-if (!$fatalError && !tableExists($pdo,'theo_doi_gia')) $fatalError = "Thiếu bảng <b>theo_doi_gia</b>.";
+
+// detect bảng lịch sử giá
+$hisTable = null;
+if (!$fatalError) {
+  foreach (['theo_doi_gia','theodoi_gia','gia_log','price_log'] as $t) {
+    if (tableExists($pdo,$t)) { $hisTable = $t; break; }
+  }
+  if (!$hisTable) $fatalError = "Thiếu bảng theo dõi giá (cần <b>theo_doi_gia</b> hoặc <b>theodoi_gia</b>).";
+}
 
 /* ================= Map schema ================= */
 $SP_ID=$SP_NAME=$SP_IMG=$SP_COST=$SP_PRICE=null;
-$HIS_ID=$HIS_SP=$HIS_TIME=$HIS_OLD=$HIS_NEW=$HIS_NOTE=null;
+$HIS_ID=$HIS_SP=$HIS_TIME=$HIS_OLD=$HIS_NEW=$HIS_NOTE=$HIS_USER=null;
 
 if (!$fatalError) {
-  // sanpham
   $spCols = getCols($pdo,'sanpham');
-  $SP_ID   = pickCol($spCols, ['id_san_pham','id']);
+  $SP_ID   = pickCol($spCols, ['id_san_pham','id','sanpham_id']);
   $SP_NAME = pickCol($spCols, ['ten_san_pham','ten','name']);
   $SP_IMG  = pickCol($spCols, ['hinh_anh','anh','image']);
   $SP_COST = pickCol($spCols, ['gia_nhap','gia_von','cost']);
@@ -76,23 +86,23 @@ if (!$fatalError) {
   if(!$SP_NAME) $fatalError = $fatalError ?: "Bảng sanpham thiếu cột tên (ten_san_pham).";
   if(!$SP_PRICE)$fatalError = $fatalError ?: "Bảng sanpham thiếu cột giá bán (gia/gia_ban).";
 
-  // theo_doi_gia
-  $hisCols = getCols($pdo,'theo_doi_gia');
+  $hisCols = getCols($pdo,$hisTable);
   $HIS_ID   = pickCol($hisCols, ['id','id_theo_doi','id_log']);
-  $HIS_SP   = pickCol($hisCols, ['id_san_pham','sanpham_id']);
-  $HIS_TIME = pickCol($hisCols, ['thoi_gian','ngay_tao','created_at','updated_at']);
+  $HIS_SP   = pickCol($hisCols, ['id_san_pham','sanpham_id','id_sp']);
+  $HIS_TIME = pickCol($hisCols, ['thoi_gian','ngay_tao','created_at','updated_at','time']);
   $HIS_OLD  = pickCol($hisCols, ['gia_cu','old_price','gia_truoc']);
   $HIS_NEW  = pickCol($hisCols, ['gia_moi','new_price','gia_sau']);
-  $HIS_NOTE = pickCol($hisCols, ['ghi_chu','note','mo_ta']);
+  $HIS_NOTE = pickCol($hisCols, ['ghi_chu','note','mo_ta','description']);
+  $HIS_USER = pickCol($hisCols, ['id_admin','id_user','nguoi_thuc_hien','id_nguoi_dung']);
 
-  if(!$HIS_SP)  $fatalError = $fatalError ?: "Bảng theo_doi_gia thiếu cột liên kết sản phẩm (id_san_pham).";
-  if(!$HIS_OLD) $fatalError = $fatalError ?: "Bảng theo_doi_gia thiếu cột giá cũ (gia_cu).";
-  if(!$HIS_NEW) $fatalError = $fatalError ?: "Bảng theo_doi_gia thiếu cột giá mới (gia_moi).";
+  if(!$HIS_SP)  $fatalError = $fatalError ?: "Bảng $hisTable thiếu cột liên kết sản phẩm (id_san_pham).";
+  if(!$HIS_OLD) $fatalError = $fatalError ?: "Bảng $hisTable thiếu cột giá cũ (gia_cu).";
+  if(!$HIS_NEW) $fatalError = $fatalError ?: "Bảng $hisTable thiếu cột giá mới (gia_moi).";
 }
 
 /* ================= Filters / Pagination ================= */
-$type = $_GET['type'] ?? '';
-$msg  = $_GET['msg'] ?? '';
+$type = (string)($_GET['type'] ?? '');
+$msg  = (string)($_GET['msg'] ?? '');
 
 $q    = trim((string)($_GET['q'] ?? ''));
 $page = max(1,(int)($_GET['page'] ?? 1));
@@ -108,16 +118,14 @@ if (!$fatalError) {
   $params = [];
 
   if ($q !== '') {
-    // tìm theo tên / id sản phẩm
     $where .= " AND (sp.{$SP_NAME} LIKE ? OR sp.{$SP_ID} = ?) ";
     $params[] = "%$q%";
     $params[] = (int)$q;
   }
 
-  // count
   $st = $pdo->prepare("
     SELECT COUNT(*)
-    FROM theo_doi_gia h
+    FROM {$hisTable} h
     JOIN sanpham sp ON sp.{$SP_ID} = h.{$HIS_SP}
     $where
   ");
@@ -125,8 +133,8 @@ if (!$fatalError) {
   $total = (int)$st->fetchColumn();
   $totalPages = max(1, (int)ceil($total/$perPage));
 
-  // list
   $timeOrder = $HIS_TIME ? "h.{$HIS_TIME}" : ($HIS_ID ? "h.{$HIS_ID}" : "1");
+
   $sql = "
     SELECT
       sp.{$SP_ID}   AS sp_id,
@@ -138,7 +146,8 @@ if (!$fatalError) {
       , h.{$HIS_OLD}  AS his_old
       , h.{$HIS_NEW}  AS his_new
       ".($HIS_NOTE ? ", h.{$HIS_NOTE} AS his_note" : ", NULL AS his_note")."
-    FROM theo_doi_gia h
+      ".($HIS_USER ? ", h.{$HIS_USER} AS his_user" : ", NULL AS his_user")."
+    FROM {$hisTable} h
     JOIN sanpham sp ON sp.{$SP_ID} = h.{$HIS_SP}
     $where
     ORDER BY $timeOrder DESC
@@ -146,7 +155,7 @@ if (!$fatalError) {
   ";
   $st = $pdo->prepare($sql);
   $st->execute($params);
-  $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+  $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 /* ================= Render ================= */
@@ -170,6 +179,9 @@ function urlWith(array $add=[]): string {
     <div class="p-6 bg-white rounded-2xl border border-gray-200 shadow-soft">
       <div class="text-lg font-extrabold mb-2">Không thể tải trang</div>
       <div class="text-sm text-slate-600"><?= $fatalError ?></div>
+      <div class="text-sm text-slate-600 mt-3">
+        Gợi ý: tạo bảng theo dõi giá theo SQL mình gửi ở cuối.
+      </div>
     </div>
   </div>
   <?php require_once __DIR__ . '/includes/giaoDienCuoi.php'; exit; ?>
@@ -192,7 +204,7 @@ function urlWith(array $add=[]): string {
     <div>
       <div class="text-2xl font-extrabold">Lịch sử thay đổi giá</div>
       <div class="text-sm text-slate-500 font-semibold">
-        Hiển thị: Ảnh • Tên • Giá nhập • Giá bán • Thời gian • Giá cũ • Giá mới • Ghi chú
+        Bảng: <b><?= h($hisTable) ?></b> • Ảnh • Tên • Giá nhập • Giá bán • Thời gian • Giá cũ • Giá mới • Ghi chú
       </div>
     </div>
     <div class="text-xs px-3 py-1 rounded-full bg-slate-100 text-slate-600 font-extrabold">
@@ -200,7 +212,6 @@ function urlWith(array $add=[]): string {
     </div>
   </div>
 
-  <!-- Filter -->
   <div class="bg-white rounded-2xl border border-gray-200 shadow-soft p-4 md:p-5">
     <form class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end" method="get">
       <div class="md:col-span-10">
@@ -215,7 +226,6 @@ function urlWith(array $add=[]): string {
     </form>
   </div>
 
-  <!-- Table -->
   <div class="bg-white rounded-2xl border border-gray-200 shadow-soft overflow-hidden">
     <div class="p-4 md:p-5 flex items-center justify-between">
       <div class="text-sm font-extrabold">Nhật ký giá (mới nhất trước)</div>
@@ -245,7 +255,7 @@ function urlWith(array $add=[]): string {
         <?php foreach($rows as $r): ?>
           <?php
             $img = (string)($r['sp_img'] ?? '');
-            $imgUrl = $img ? "../assets/img/{$img}" : '';
+            $imgUrl = $img ? img_src($img) : '';
             $spId = (int)($r['sp_id'] ?? 0);
             $spTen = (string)($r['sp_ten'] ?? '');
             $cost = $r['sp_cost'];
@@ -299,7 +309,6 @@ function urlWith(array $add=[]): string {
       </table>
     </div>
 
-    <!-- Pagination -->
     <div class="p-4 md:p-5 flex items-center justify-between">
       <div class="text-xs text-slate-500">Trang <?= $page ?>/<?= $totalPages ?></div>
       <div class="flex gap-2">

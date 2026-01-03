@@ -400,6 +400,8 @@ function pill($key,$label,$active){
         <?php pill('today','Hôm nay',$range); ?>
         <?php pill('7days','7 ngày',$range); ?>
         <?php pill('month','Tháng',$range); ?>
+        <a href="lichsu_kho.php" class="px-4 py-2 rounded-xl border border-line bg-white text-sm font-extrabold">Lịch sử kho</a>
+
       </div>
     </div>
 

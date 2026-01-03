@@ -93,10 +93,7 @@ $roleLabel = ($role === 'ADMIN') ? 'ADMIN' : (str_replace('_',' ', $role) ?: 'NH
         <?= h($roleLabel) ?><?= $dept ? ' • '.h($dept) : '' ?>
       </span>
 
-      <a href="dang_xuat.php"
-        class="hidden sm:inline-flex items-center gap-2 px-3 py-2 rounded-2xl border border-slate-200 bg-white hover:bg-slate-50 text-sm font-extrabold text-slate-700">
-        <span class="material-symbols-outlined text-[20px]">logout</span>
-        Đăng xuất
+      
       </a>
     </div>
   </header>

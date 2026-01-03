@@ -1,18 +1,20 @@
 <?php
 // admin/tong_quan.php
-session_start();
+declare(strict_types=1);
+
+if (session_status() === PHP_SESSION_NONE) session_start();
+
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
-require_once __DIR__ . '/includes/hamChung.php';   // ✅ thêm dòng này
+require_once __DIR__ . '/includes/hamChung.php';
 
 requirePermission('tong_quan');
+
 $ACTIVE = 'tong_quan';
 $PAGE_TITLE = 'Bảng điều khiển';
 
 require_once __DIR__ . '/includes/giaoDienDau.php';
 require_once __DIR__ . '/includes/thanhBen.php';
 require_once __DIR__ . '/includes/thanhTren.php';
-
-requirePermission('tong_quan');
 
 /* ================= Fallback get_setting ================= */
 if (!function_exists('get_setting')) {
@@ -22,7 +24,7 @@ if (!function_exists('get_setting')) {
     $K = pickCol($cols, ['khoa','key','ten']);
     $V = pickCol($cols, ['gia_tri','value','noi_dung']);
     if(!$K || !$V) return $default;
-    $st = $pdo->prepare("SELECT $V FROM cai_dat WHERE $K=? LIMIT 1");
+    $st = $pdo->prepare("SELECT {$V} FROM cai_dat WHERE {$K}=? LIMIT 1");
     $st->execute([$key]);
     $v = $st->fetchColumn();
     return ($v===false || $v===null || $v==='') ? $default : $v;
@@ -32,19 +34,20 @@ if (!function_exists('get_setting')) {
 /* ================= Detect schema ================= */
 if (!tableExists($pdo,'donhang')) {
   echo "<div class='p-6 bg-white rounded-2xl border border-line'>Thiếu bảng <b>donhang</b>.</div>";
-  
+  require_once __DIR__ . '/includes/giaoDienCuoi.php';
   exit;
 }
 
 $dhCols = getCols($pdo,'donhang');
-$DH_ID     = pickCol($dhCols, ['id_don_hang']);
+$DH_ID     = pickCol($dhCols, ['id_don_hang','id']);
 $DH_CODE   = pickCol($dhCols, ['ma_don_hang']);
 $DH_TOTAL  = pickCol($dhCols, ['tong_thanh_toan','tong_tien']);
-$DH_STATUS = pickCol($dhCols, ['trang_thai']);
+$DH_STATUS = pickCol($dhCols, ['trang_thai','status']);
 $DH_DATE   = pickCol($dhCols, ['ngay_dat','ngay_tao','created_at']);
 $DH_UPD    = pickCol($dhCols, ['ngay_cap_nhat','updated_at']);
-if(!$DH_ID) die("Bảng donhang thiếu cột id_don_hang.");
+if(!$DH_ID) die("Bảng donhang thiếu cột id.");
 
+/* chi tiết đơn */
 $ctOk = tableExists($pdo,'chitiet_donhang');
 $ctCols = $ctOk ? getCols($pdo,'chitiet_donhang') : [];
 $CT_IDDH  = $ctOk ? pickCol($ctCols, ['id_don_hang']) : null;
@@ -54,26 +57,20 @@ $CT_QTY   = $ctOk ? pickCol($ctCols, ['so_luong']) : null;
 $CT_PRICE = $ctOk ? pickCol($ctCols, ['don_gia']) : null;
 $CT_TOTAL = $ctOk ? pickCol($ctCols, ['thanh_tien']) : null;
 
+/* sản phẩm */
 $spOk = tableExists($pdo,'sanpham');
 $spCols = $spOk ? getCols($pdo,'sanpham') : [];
 $SP_ID    = $spOk ? pickCol($spCols, ['id_san_pham','id']) : null;
 $SP_NAME  = $spOk ? pickCol($spCols, ['ten_san_pham','ten']) : null;
-$SP_IMG   = $spOk ? pickCol($spCols, ['hinh_anh','anh']) : null;
-$SP_QTY   = $spOk ? pickCol($spCols, ['so_luong','ton_kho']) : null;
+$SP_IMG   = $spOk ? pickCol($spCols, ['hinh_anh','anh','image']) : null;
+$SP_QTY   = $spOk ? pickCol($spCols, ['so_luong','ton_kho','qty']) : null;
 $SP_COST  = $spOk ? pickCol($spCols, ['gia_nhap','gia_von','cost']) : null;
 
-$tkOk = tableExists($pdo,'tonkho');
-$tkCols = $tkOk ? getCols($pdo,'tonkho') : [];
-$TK_QTY = $tkOk ? pickCol($tkCols, ['so_luong']) : null;
-
-$dateCol = $DH_DATE ?: ($DH_UPD ?: null);
-$totalCol = $DH_TOTAL ?: null;
+$dateCol   = $DH_DATE ?: ($DH_UPD ?: null);
+$totalCol  = $DH_TOTAL ?: null;
 $statusCol = $DH_STATUS ?: null;
 
-/* ================= Conditions =================
-  - Cancel: LIKE '%huy%' OR '%cancel%'
-  - Completed: LIKE '%hoan%' OR '%complete%'
-*/
+/* ================= Conditions ================= */
 function sql_is_cancelled(string $col): string {
   return "(LOWER($col) LIKE '%huy%' OR LOWER($col) LIKE '%cancel%')";
 }
@@ -150,14 +147,35 @@ if ($profitOk && $dateCol && $statusCol) {
   }
 }
 
-/* ===== Stock total + low stock ===== */
+/* ===== Stock total + low stock (FIX CHUẨN) ===== */
 $lowThreshold = (int)get_setting($pdo, 'low_stock_threshold', 5);
+
 $totalStock = 0;
 $lowStockCount = 0;
 $lowStockList = [];
 
+$tkOk = tableExists($pdo,'tonkho');
+$tkHasData = false;
+
+$TK_IDSP = $TK_QTY = $TK_MIN = null;
+
+if ($tkOk) {
+  try {
+    $tkCols = getCols($pdo,'tonkho');
+    $TK_IDSP = pickCol($tkCols, ['id_san_pham','sanpham_id','id_sp']);
+    $TK_QTY  = pickCol($tkCols, ['so_luong','ton','qty','ton_kho']);
+    $TK_MIN  = pickCol($tkCols, ['min','ton_toi_thieu','muc_toi_thieu','low_stock']);
+
+    $st = $pdo->query("SELECT COUNT(*) FROM tonkho");
+    $tkHasData = ((int)$st->fetchColumn() > 0);
+  } catch(Throwable $e) {
+    $tkHasData = false;
+  }
+}
+
 try {
-  if ($tkOk && $TK_QTY) {
+  // 1) TOTAL STOCK
+  if ($tkOk && $tkHasData && $TK_QTY) {
     $st = $pdo->prepare("SELECT IFNULL(SUM($TK_QTY),0) FROM tonkho");
     $st->execute();
     $totalStock = (int)$st->fetchColumn();
@@ -167,7 +185,47 @@ try {
     $totalStock = (int)$st->fetchColumn();
   }
 
-  if ($spOk && $SP_QTY && $SP_NAME && $SP_ID) {
+  // 2) LOW STOCK COUNT + LIST
+  // ƯU TIÊN tonkho nếu có dữ liệu, nếu không thì fallback sang sanpham
+  if ($tkOk && $tkHasData && $TK_IDSP && $TK_QTY) {
+    // low stock theo tổng tồn của sản phẩm (gộp các dòng tonkho nếu có nhiều kho)
+    $minExpr = $TK_MIN ? "MAX(COALESCE(tk.$TK_MIN, :gmin))" : ":gmin";
+    $sub = "
+      SELECT tk.$TK_IDSP AS id,
+             SUM(tk.$TK_QTY) AS qty,
+             $minExpr AS min_qty
+      FROM tonkho tk
+      GROUP BY tk.$TK_IDSP
+      HAVING qty <= min_qty
+    ";
+
+    // count
+    $sql = "SELECT COUNT(*) FROM ($sub) x";
+    $st = $pdo->prepare($sql);
+    $st->execute([':gmin'=>$lowThreshold]);
+    $lowStockCount = (int)$st->fetchColumn();
+
+    // list
+    $imgSel = ($spOk && $SP_IMG) ? ", sp.$SP_IMG AS img" : ", NULL AS img";
+    $nameSel = ($spOk && $SP_NAME) ? "COALESCE(sp.$SP_NAME, CONCAT('#',x.id))" : "CONCAT('#',x.id)";
+    $join = ($spOk && $SP_ID) ? "LEFT JOIN sanpham sp ON sp.$SP_ID = x.id" : "";
+
+    $sql = "
+      SELECT x.id,
+             $nameSel AS ten,
+             x.qty
+             $imgSel
+      FROM ($sub) x
+      $join
+      ORDER BY x.qty ASC
+      LIMIT 5
+    ";
+    $st = $pdo->prepare($sql);
+    $st->execute([':gmin'=>$lowThreshold]);
+    $lowStockList = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  }
+  elseif ($spOk && $SP_QTY && $SP_NAME && $SP_ID) {
+    // fallback theo sanpham.so_luong
     $st = $pdo->prepare("SELECT COUNT(*) FROM sanpham WHERE $SP_QTY <= ?");
     $st->execute([$lowThreshold]);
     $lowStockCount = (int)$st->fetchColumn();
@@ -183,7 +241,9 @@ try {
     $st->execute([$lowThreshold]);
     $lowStockList = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
   }
-} catch(Throwable $e) {}
+} catch(Throwable $e) {
+  // giữ mặc định 0 nếu lỗi query
+}
 
 /* ===== Trends ===== */
 function pct_change(int $now, int $prev): float {
@@ -230,7 +290,7 @@ if ($chartOk) {
     if ($idx>=0 && $idx<count($curData)) $curData[$idx] = (int)$r['v'];
   }
 
-  // previous month (map by day number, fit to current days length)
+  // previous month
   $st = $pdo->prepare("
     SELECT DAY($dateCol) AS d, IFNULL(SUM($totalCol),0) AS v
     FROM donhang
@@ -323,9 +383,11 @@ function trend_badge(float $pct): array {
   return ['bg'=>'bg-slate-100','tx'=>'text-slate-600','icon'=>'trending_flat'];
 }
 $revTrend = trend_badge($revPct);
+
 $stockLabel = ($lowStockCount > 0) ? 'Cảnh báo' : 'Ổn định';
 $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-100 text-slate-700';
 
+$me = $_SESSION['admin'] ?? [];
 ?>
 
 <!-- ===== Hero row ===== -->
@@ -334,6 +396,12 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
     <div class="text-sm text-muted font-bold">Chào, <?= h($me['ho_ten'] ?? $me['username'] ?? 'Admin') ?></div>
     <div class="text-2xl md:text-3xl font-extrabold mt-1">Tổng quan hoạt động hôm nay</div>
     <div class="text-sm text-muted mt-2">Các chỉ số được lấy trực tiếp từ hệ thống đơn hàng và kho.</div>
+
+    <?php if($tkOk && !$tkHasData): ?>
+      <div class="mt-3 text-xs font-extrabold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 inline-block">
+        Lưu ý: bảng <b>tonkho</b> đang trống, dashboard đang fallback theo <b>sanpham</b>.
+      </div>
+    <?php endif; ?>
   </div>
 
   <div class="hidden md:flex items-center gap-2">
@@ -347,7 +415,7 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
 <!-- ===== KPI Cards ===== -->
 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 md:gap-6">
   <!-- Revenue -->
-  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5 transition hover:-translate-y-0.5 hover:shadow-soft">
     <div class="flex items-start justify-between">
       <div class="size-12 rounded-2xl bg-primary/10 grid place-items-center">
         <span class="material-symbols-outlined text-primary">paid</span>
@@ -363,7 +431,7 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
   </div>
 
   <!-- Orders -->
-  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5 transition hover:-translate-y-0.5 hover:shadow-soft">
     <div class="flex items-start justify-between">
       <div class="size-12 rounded-2xl bg-purple-50 grid place-items-center">
         <span class="material-symbols-outlined text-purple-600">shopping_cart</span>
@@ -378,7 +446,7 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
   </div>
 
   <!-- Profit -->
-  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5 transition hover:-translate-y-0.5 hover:shadow-soft">
     <div class="flex items-start justify-between">
       <div class="size-12 rounded-2xl bg-orange-50 grid place-items-center">
         <span class="material-symbols-outlined text-orange-600">donut_large</span>
@@ -400,7 +468,7 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
   </div>
 
   <!-- Stock -->
-  <div class="bg-white rounded-2xl border border-line shadow-card p-5">
+  <div class="bg-white rounded-2xl border border-line shadow-card p-5 transition hover:-translate-y-0.5 hover:shadow-soft">
     <div class="flex items-start justify-between">
       <div class="size-12 rounded-2xl bg-sky-50 grid place-items-center">
         <span class="material-symbols-outlined text-sky-600">inventory_2</span>
@@ -411,7 +479,10 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
     </div>
     <div class="mt-4 text-sm text-muted font-bold">Tổng tồn kho</div>
     <div class="mt-1 text-2xl font-extrabold"><?= number_format($totalStock) ?></div>
-    <div class="mt-2 text-xs text-muted font-bold">Sản phẩm sắp hết <span class="text-danger font-extrabold"><?= number_format($lowStockCount) ?></span></div>
+    <div class="mt-2 text-xs text-muted font-bold">
+      Sản phẩm sắp hết <span class="text-danger font-extrabold"><?= number_format($lowStockCount) ?></span>
+      <span class="ml-2 text-[11px] text-slate-400 font-extrabold">(ngưỡng: <?= (int)$lowThreshold ?>)</span>
+    </div>
   </div>
 </div>
 
@@ -459,6 +530,7 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
           <div class="text-sm text-muted font-bold mt-1">
             Ngưỡng cảnh báo: <?= (int)$lowThreshold ?>.
           </div>
+
           <?php if(!empty($lowStockList)): ?>
             <div class="mt-3 space-y-2">
               <?php foreach($lowStockList as $p): ?>
@@ -498,13 +570,13 @@ $stockLabelCls = ($lowStockCount > 0) ? 'bg-danger/10 text-danger' : 'bg-slate-1
         <?php else: ?>
           <?php foreach($topSelling as $t):
             $img = $t['img'] ?? null;
-            $imgSrc = $img ? ("../assets/img/".h($img)) : null;
+            $imgSrc = $img ? ("../assets/img/".h((string)$img)) : null;
             $pct = (float)($t['pct'] ?? 0);
             $pctCls = $pct>=0 ? 'text-green-600' : 'text-red-600';
           ?>
             <div class="flex items-center gap-3">
               <?php if($imgSrc): ?>
-                <img src="<?= $imgSrc ?>" data-hover-img="<?= $imgSrc ?>" class="size-11 rounded-xl object-cover border border-line bg-white" alt="">
+                <img src="<?= $imgSrc ?>" class="size-11 rounded-xl object-cover border border-line bg-white" alt="">
               <?php else: ?>
                 <div class="size-11 rounded-xl border border-line bg-[#f1f5f9] grid place-items-center text-slate-400">
                   <span class="material-symbols-outlined">photo</span>
