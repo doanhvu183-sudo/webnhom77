@@ -1,0 +1,39 @@
+.profile-container {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    padding: 40px 0;
+}
+
+.profile-card {
+    width: 450px;
+    background: white;
+    border-radius: 18px;
+    padding: 30px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+    border: 1px solid #eee;
+}
+
+.profile-card h2 {
+    text-align: center;
+    margin-bottom: 20px;
+    font-weight: 700;
+}
+
+.profile-item {
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 16px;
+}
+
+.btn-auth {
+    display: block;
+    margin-top: 25px;
+    padding: 12px;
+    background: #111;
+    color: white;
+    text-align: center;
+    border-radius: 10px;
+}
+.btn-auth:hover { background: #00a339; }

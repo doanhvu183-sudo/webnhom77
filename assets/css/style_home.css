@@ -1,0 +1,57 @@
+.hero-slider {
+    margin-top: 15px;
+}
+
+.slider-wrapper {
+    position: relative;
+    overflow: hidden;
+    border-radius: 18px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
+
+.slide {
+    display: none;
+    position: relative;
+}
+.slide.active {
+    display: block;
+}
+.slide img {
+    width: 100%;
+    display: block;
+}
+
+.slide-content {
+    position: absolute;
+    left: 40px;
+    bottom: 40px;
+    color: #fff;
+    max-width: 35%;
+}
+.slide-content h1 {
+    font-size: 32px;
+    margin-bottom: 10px;
+}
+.slide-content p {
+    font-size: 15px;
+}
+
+/* Nút chuyển slide */
+.slide-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: rgba(0,0,0,0.4);
+    color: #fff;
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    cursor: pointer;
+}
+.slide-btn.prev {
+    left: 15px;
+}
+.slide-btn.next {
+    right: 15px;
+}

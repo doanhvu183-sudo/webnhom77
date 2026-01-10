@@ -1,0 +1,126 @@
+.order-container {
+    width: 85%;
+    max-width: 950px;
+    margin: 40px auto;
+    padding-bottom: 50px;
+}
+
+.order-container h2 {
+    font-size: 26px;
+    margin-bottom: 25px;
+    font-weight: 700;
+    color: #222;
+}
+
+/* Khi trống */
+.order-empty {
+    text-align: center;
+    padding: 40px;
+}
+
+.empty-img {
+    width: 180px;
+    opacity: 0.7;
+    margin-bottom: 20px;
+}
+
+.order-empty p {
+    font-size: 18px;
+    color: #444;
+}
+
+
+/* BOX ĐƠN HÀNG */
+.order-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 18px 20px;
+    background: #fff;
+    margin-bottom: 15px;
+    border-radius: 14px;
+    border: 1px solid #eee;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+    transition: 0.2s;
+}
+
+.order-item:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+}
+
+.order-left p {
+    margin: 5px 0;
+    color: #333;
+}
+
+.order-id strong {
+    color: #000;
+}
+
+.order-status {
+    margin-top: 5px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    display: inline-block;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.order-status.chờ\ xác\ nhận {
+    background: #fffae6;
+    color: #c99500;
+}
+
+.order-status.hoàn\ tất {
+    background: #e6ffe9;
+    color: #1d8e36;
+}
+
+.order-status.đã\ hủy {
+    background: #ffe6e6;
+    color: #b80000;
+}
+
+.order-right {
+    text-align: right;
+}
+
+.order-total {
+    font-size: 20px;
+    font-weight: bold;
+    color: #111;
+}
+
+/* nút xem chi tiết */
+.btn-view {
+    display: inline-block;
+    margin-top: 5px;
+    padding: 8px 16px;
+    background: #111;
+    color: #fff;
+    border-radius: 8px;
+    text-decoration: none;
+    transition: 0.2s;
+}
+
+.btn-view:hover {
+    background: #00a339;
+}
+
+/* khi chưa đăng nhập */
+.warning-box {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.btn-login {
+    padding: 8px 16px;
+    background: #222;
+    color: #fff;
+    border-radius: 8px;
+    text-decoration: none;
+}
+
+.btn-login:hover {
+    background: #00a339;
+}
