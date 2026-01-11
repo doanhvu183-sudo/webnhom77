@@ -2,62 +2,89 @@
 require_once __DIR__ . '/../cau_hinh/ket_noi.php';
 require_once __DIR__ . '/../giao_dien/header.php';
 
-/* ================== SALE ẢO (1 LẦN) ================== */
-$sql_products = "SELECT id_san_pham, gia, gia_goc FROM sanpham";
-$all_products = $pdo->query($sql_products)->fetchAll(PDO::FETCH_ASSOC);
-
-foreach ($all_products as $p) {
-    if ($p['gia_goc'] == NULL) {
-        $percent = rand(10, 30);
-        $gia_goc = $p['gia'];
-        $gia_km  = $gia_goc - ($gia_goc * $percent / 100);
-
-        $update = $pdo->prepare("
-            UPDATE sanpham 
-            SET gia_goc = :goc, gia_khuyen_mai = :km 
-            WHERE id_san_pham = :id
-        ");
-        $update->execute([
-            ':goc' => $gia_goc,
-            ':km'  => $gia_km,
-            ':id'  => $p['id_san_pham']
-        ]);
-    }
-}
+/**
+ * Đồng nhất hiển thị với Admin:
+ * - Chỉ hiển thị SP: sanpham.hien_thi=1 AND sanpham.trang_thai=1
+ * - Chỉ hiển thị SP thuộc DM đang bật: danhmuc.hien_thi=1
+ * - KHÔNG tạo SALE ảo (không update DB khi load trang)
+ */
 
 /* ================== DATA ================== */
+
+// Hàng mới (lọc ẩn/hiện + danh mục bật)
 $hang_moi = $pdo->query("
-    SELECT *
-    FROM sanpham
-    ORDER BY ngay_tao DESC
+    SELECT s.*
+    FROM sanpham s
+    JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+    WHERE s.hien_thi = 1
+      AND s.trang_thai = 1
+      AND dm.hien_thi = 1
+    ORDER BY s.ngay_tao DESC, s.id_san_pham DESC
     LIMIT 5
 ")->fetchAll(PDO::FETCH_ASSOC);
 
+// Sale (lọc ẩn/hiện + danh mục bật)
+// - Base giá gốc ưu tiên gia_goc, nếu null/0 thì dùng gia
 $hang_sale = $pdo->query("
-    SELECT *,
-    ROUND((gia_goc - gia_khuyen_mai) / gia_goc * 100) AS phan_tram_sale
-    FROM sanpham
-    WHERE gia_khuyen_mai IS NOT NULL
-      AND gia_goc > gia_khuyen_mai
-    ORDER BY ngay_cap_nhat DESC
+    SELECT s.*,
+           ROUND(
+             (
+               (COALESCE(NULLIF(s.gia_goc,0), s.gia) - s.gia_khuyen_mai)
+               / NULLIF(COALESCE(NULLIF(s.gia_goc,0), s.gia),0)
+             ) * 100
+           ) AS phan_tram_sale
+    FROM sanpham s
+    JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+    WHERE s.hien_thi = 1
+      AND s.trang_thai = 1
+      AND dm.hien_thi = 1
+      AND s.gia_khuyen_mai IS NOT NULL
+      AND s.gia_khuyen_mai > 0
+      AND COALESCE(NULLIF(s.gia_goc,0), s.gia) > s.gia_khuyen_mai
+    ORDER BY s.ngay_cap_nhat DESC, s.id_san_pham DESC
     LIMIT 10
 ")->fetchAll(PDO::FETCH_ASSOC);
 
+// Bán chạy: ưu tiên theo chitiet_donhang (sum so_luong)
+try {
+    $best_sellers = $pdo->query("
+        SELECT s.*,
+               SUM(ct.so_luong) AS sold_qty
+        FROM chitiet_donhang ct
+        JOIN sanpham s ON s.id_san_pham = ct.id_san_pham
+        JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+        WHERE s.hien_thi = 1
+          AND s.trang_thai = 1
+          AND dm.hien_thi = 1
+        GROUP BY s.id_san_pham
+        ORDER BY sold_qty DESC, s.id_san_pham DESC
+        LIMIT 18
+    ")->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    $best_sellers = [];
+}
 
-$best_sellers = $pdo->query("
-    SELECT *
-    FROM sanpham
-    ORDER BY RAND()
-    LIMIT 18
-")->fetchAll(PDO::FETCH_ASSOC);
+// Nếu chưa có dữ liệu bán chạy → fallback random (nhưng vẫn lọc ẩn/hiện)
+if (empty($best_sellers)) {
+    $best_sellers = $pdo->query("
+        SELECT s.*
+        FROM sanpham s
+        JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+        WHERE s.hien_thi = 1
+          AND s.trang_thai = 1
+          AND dm.hien_thi = 1
+        ORDER BY RAND()
+        LIMIT 18
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
 ?>
 
 <main class="bg-white">
 
 <!-- ================= HERO ================= -->
-<section class="relative h-[520px] bg-cover bg-center"
-         style="background-image:url('../assets/img/hero1.jpg')">
-    <div class="absolute inset-0 bg-black/40"></div>
+<section class="relative h-[780px] bg-cover bg-center"
+         style="background-image:url('../assets/img/hero2.jpg')">
+    <div class="absolute inset-0 bg-black/30"></div>
     <div class="relative h-full max-w-[1400px] mx-auto px-10 flex flex-col justify-center text-white">
         <h1 class="text-5xl md:text-6xl font-black uppercase mb-6">
             Holiday Collection
@@ -136,6 +163,10 @@ $best_sellers = $pdo->query("
 
     <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
         <?php foreach ($hang_sale as $sp): ?>
+        <?php
+            $base_goc = (int)($sp['gia_goc'] ?? 0);
+            if ($base_goc <= 0) $base_goc = (int)($sp['gia'] ?? 0);
+        ?>
         <a href="chi_tiet_san_pham.php?id=<?= $sp['id_san_pham'] ?>"
            class="product-card relative">
 
@@ -152,7 +183,7 @@ $best_sellers = $pdo->query("
                     <?= number_format($sp['gia_khuyen_mai']) ?>₫
                 </span>
                 <span class="line-through text-gray-400 text-sm">
-                    <?= number_format($sp['gia_goc']) ?>₫
+                    <?= number_format($base_goc) ?>₫
                 </span>
             </div>
         </a>
@@ -267,7 +298,6 @@ $best_sellers = $pdo->query("
     width:100%;
     border-radius:18px;
 }
-
 </style>
 
 <?php require_once __DIR__ . '/../giao_dien/footer.php'; ?>

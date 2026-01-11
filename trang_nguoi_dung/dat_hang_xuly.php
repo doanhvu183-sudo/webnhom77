@@ -1,144 +1,182 @@
 <?php
-// dat_hang_xuly.php
-session_start();
-require_once __DIR__ . '/../cau_hinh/ket_noi.php';
+require_once __DIR__ . '/../includes/auth_core.php';
+require_login();
 
-if (!isset($_SESSION['nguoi_dung'])) {
-    header("Location: dang_nhap.php");
-    exit;
+file_put_contents(__DIR__ . '/__checkout_hit.txt', date('c')." HIT\n", FILE_APPEND);
+
+if (!is_post()) {
+  redirect(base_url('trang_nguoi_dung/thanh_toan.php'));
+  exit;
 }
 
-$user = $_SESSION['nguoi_dung'];
-$userId = $user['id_nguoi_dung'] ?? ($user['id'] ?? 0);
-
-$cart   = $_SESSION['cart'] ?? [];
-$chonSP = $_POST['cart_keys'] ?? [];
-if (!is_array($chonSP)) $chonSP = [];
-
-if (empty($cart) || empty($chonSP)) {
-    die('Không có sản phẩm để đặt hàng');
+if (!csrf_check($_POST['_csrf'] ?? '')) {
+  flash_set('err', 'Phiên làm việc không hợp lệ, vui lòng thử lại.');
+  redirect(base_url('trang_nguoi_dung/thanh_toan.php'));
+  exit;
 }
 
-/* ================== TÍNH TIỀN (ĐỒNG BỘ) ================== */
+$cart = $_SESSION['cart'] ?? [];
+if (empty($cart)) {
+  flash_set('err', 'Giỏ hàng trống.');
+  redirect(base_url('trang_nguoi_dung/gio_hang.php'));
+  exit;
+}
+
+$u = $_SESSION['nguoi_dung'] ?? [];
+$uid = (int)($u['id_nguoi_dung'] ?? ($u['id'] ?? 0));
+if ($uid <= 0) {
+  auth_logout();
+  redirect(base_url('trang_nguoi_dung/dang_nhap.php'));
+  exit;
+}
+
+$ho_ten = trim((string)($_POST['ho_ten'] ?? ''));
+$email  = trim((string)($_POST['email'] ?? ''));
+$sdt    = normalize_phone(trim((string)($_POST['so_dien_thoai'] ?? '')));
+$dia_chi= trim((string)($_POST['dia_chi'] ?? ''));
+$pttt   = (string)($_POST['phuong_thuc'] ?? 'COD');
+
+if ($ho_ten === '' || $email === '' || $sdt === '' || $dia_chi === '') {
+  flash_set('err', 'Vui lòng nhập đầy đủ thông tin nhận hàng.');
+  redirect(base_url('trang_nguoi_dung/thanh_toan.php'));
+  exit;
+}
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+  flash_set('err', 'Email không hợp lệ.');
+  redirect(base_url('trang_nguoi_dung/thanh_toan.php'));
+  exit;
+}
+
+// Tính tiền theo cart đã đồng bộ
 $tong_tien = 0;
-$items = [];
-
-foreach ($chonSP as $key) {
-    if (!isset($cart[$key])) continue;
-
-    $sp = $cart[$key];
-    $qty = max(1, (int)($sp['qty'] ?? $sp['so_luong_mua'] ?? 1));
-    $don_gia = (int)($sp['don_gia'] ?? $sp['gia'] ?? 0);
-    $thanh_tien = $don_gia * $qty;
-
-    $tong_tien += $thanh_tien;
-
-    $items[] = [
-        'key'         => $key,
-        'id_san_pham'  => (int)($sp['id'] ?? 0),
-        'ten_san_pham' => (string)($sp['ten'] ?? ''),
-        'size'        => (string)($sp['size'] ?? ''),
-        'so_luong'     => $qty,
-        'don_gia'      => $don_gia,
-        'thanh_tien'   => $thanh_tien
-    ];
+foreach ($cart as $sp) {
+  $don_gia = (int)($sp['don_gia'] ?? ($sp['gia'] ?? 0));
+  $qty = max(1, (int)($sp['qty'] ?? 1));
+  $tong_tien += $don_gia * $qty;
 }
 
-if (empty($items)) {
-    die('Không có sản phẩm hợp lệ để đặt hàng');
-}
-
-/* ================== VOUCHER (SESSION) ================== */
+// Voucher
 $tien_giam = 0;
 $ma_voucher = null;
+if (!empty($_SESSION['voucher']) && is_array($_SESSION['voucher'])) {
+  $vc = $_SESSION['voucher'];
+  $ma_voucher = $vc['ma_voucher'] ?? null;
 
-if (!empty($_SESSION['voucher'])) {
-    $vc = $_SESSION['voucher'];
-    $ma_voucher = $vc['ma_voucher'] ?? null;
+  $loai = strtoupper((string)($vc['loai'] ?? ''));
+  $gia_tri = (int)($vc['gia_tri'] ?? 0);
+  $toi_da = (int)($vc['toi_da'] ?? 0);
 
-    if (($vc['loai'] ?? '') === 'TIEN') {
-        $tien_giam = (int)($vc['gia_tri'] ?? 0);
-    } elseif (($vc['loai'] ?? '') === 'PHAN_TRAM') {
-        $tien_giam = (int)floor($tong_tien * ((int)($vc['gia_tri'] ?? 0)) / 100);
-        if (!empty($vc['toi_da'])) {
-            $tien_giam = min($tien_giam, (int)$vc['toi_da']);
-        }
-    }
+  if ($loai === 'TIEN') {
+    $tien_giam = min(max(0, $gia_tri), $tong_tien);
+  } elseif ($loai === 'PHAN_TRAM') {
+    $pt = max(0, min(100, $gia_tri));
+    $tien_giam = (int)floor($tong_tien * $pt / 100);
+    if ($toi_da > 0) $tien_giam = min($tien_giam, $toi_da);
+    $tien_giam = min($tien_giam, $tong_tien);
+  }
 }
 
 $tong_thanh_toan = max(0, $tong_tien - $tien_giam);
 
-/* ================== TẠO MÃ ĐƠN (DÙNG ĐỂ LẤY ID) ================== */
-$ma_don_hang = 'DH' . date('YmdHis') . random_int(100, 999);
+// Tạo mã đơn
+$ma_don_hang = 'DH' . date('YmdHis') . rand(100, 999);
 
 try {
-    $pdo->beginTransaction();
+  $pdo->beginTransaction();
 
-    /* ================== TẠO ĐƠN HÀNG ================== */
-    // Chỉ dùng các cột bạn đang có/đã dùng trong các file trước đó
-    $stmt = $pdo->prepare("
-        INSERT INTO donhang
-        (id_nguoi_dung, ma_don_hang, ho_ten_nhan, so_dien_thoai_nhan, dia_chi_nhan,
-         tong_tien, tong_thanh_toan, phuong_thuc_thanh_toan, trang_thai, ma_voucher, ngay_dat)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CHO_XU_LY', ?, NOW())
-    ");
+  // ================== INSERT donhang (ĐÚNG THEO DB BẠN CHỤP) ==================
+  // donhang có các cột: id_nguoi_dung, ma_don_hang, tong_tien, tien_giam, tong_thanh_toan,
+  // trang_thai, phuong_thuc, ngay_dat, ho_ten_nhan, so_dien_thoai_nhan, dia_chi_nhan,
+  // ma_voucher, giam_gia, trang_thai_thanh_toan, da_tru_ton, ngay_cap_nhat...
+  $st = $pdo->prepare("
+    INSERT INTO donhang
+      (id_nguoi_dung, ma_don_hang, tong_tien, tien_giam, tong_thanh_toan,
+       trang_thai, phuong_thuc, ngay_dat,
+       ho_ten_nhan, so_dien_thoai_nhan, dia_chi_nhan,
+       ma_voucher, giam_gia, trang_thai_thanh_toan, da_tru_ton)
+    VALUES
+      (?, ?, ?, ?, ?,
+       ?, ?, NOW(),
+       ?, ?, ?,
+       ?, ?, 'Chưa thanh toán', 0)
+  ");
+  $st->execute([
+    $uid,
+    $ma_don_hang,
+    $tong_tien,
+    $tien_giam,
+    $tong_thanh_toan,
+    'CHO_XAC_NHAN_EMAIL',
+    $pttt,
+    $ho_ten,
+    $sdt,
+    $dia_chi,
+    $ma_voucher,
+    $tien_giam
+  ]);
 
-    $stmt->execute([
-        $userId,
-        $ma_don_hang,
-        $_POST['ho_ten'] ?? '',
-        $_POST['so_dien_thoai'] ?? '',
-        $_POST['dia_chi'] ?? '',
-        $tong_tien,
-        $tong_thanh_toan,
-        $_POST['phuong_thuc'] ?? 'COD',
-        $ma_voucher
+  $id_don = (int)$pdo->lastInsertId();
+
+  // ================== INSERT chitiet_donhang (BỎ created_at) ==================
+  $stCt = $pdo->prepare("
+    INSERT INTO chitiet_donhang
+      (id_don_hang, id_san_pham, ten_san_pham, size, so_luong, don_gia, thanh_tien)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($cart as $sp) {
+    $idsp = (int)($sp['id'] ?? 0);
+    $qty  = max(1, (int)($sp['qty'] ?? 1));
+    $dg   = (int)($sp['don_gia'] ?? ($sp['gia'] ?? 0));
+    $size = trim((string)($sp['size'] ?? ''));
+    $ten_sp = trim((string)($sp['ten'] ?? $sp['ten_san_pham'] ?? ''));
+
+    if ($idsp <= 0) continue;
+    if ($ten_sp === '') $ten_sp = 'Sản phẩm #' . $idsp; // tránh NULL
+
+    $tt = $dg * $qty;
+
+    $stCt->execute([
+      $id_don,
+      $idsp,
+      $ten_sp,
+      ($size !== '' ? $size : null),
+      $qty,
+      $dg,
+      $tt
     ]);
+  }
 
-    // 1) thử lastInsertId
-    $id_don_hang = (int)$pdo->lastInsertId();
+  // ================== OTP lưu vào nguoidung ==================
+  $otp = otp_generate_6();
+  otp_save_for_user($pdo, $uid, $otp, 600);
 
-    // 2) nếu = 0 thì lấy theo ma_don_hang (cực chắc)
-    if ($id_don_hang <= 0) {
-        $q = $pdo->prepare("SELECT id_don_hang FROM donhang WHERE ma_don_hang = ? LIMIT 1");
-        $q->execute([$ma_don_hang]);
-        $id_don_hang = (int)$q->fetchColumn();
-    }
+  $pdo->commit();
 
-    if ($id_don_hang <= 0) {
-        throw new Exception('Không tạo được đơn hàng (không lấy được id_don_hang)');
-    }
-
-    /* ================== CHI TIẾT ĐƠN ================== */
-    $stmtCT = $pdo->prepare("
-        INSERT INTO chitiet_donhang
-        (id_don_hang, id_san_pham, ten_san_pham, size, so_luong, don_gia, thanh_tien)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ");
-
-    foreach ($items as $it) {
-        $stmtCT->execute([
-            $id_don_hang,
-            $it['id_san_pham'],
-            $it['ten_san_pham'],
-            $it['size'],
-            $it['so_luong'],
-            $it['don_gia'],
-            $it['thanh_tien']
-        ]);
-
-        unset($_SESSION['cart'][$it['key']]);
-    }
-
-    if (empty($_SESSION['cart'])) unset($_SESSION['cart']);
-    unset($_SESSION['voucher']);
-
-    $pdo->commit();
-
-    header("Location: hoan_tat.php?id=" . $id_don_hang);
-    exit;
-
-} catch (Exception $e) {
-    $pdo->rollBack();
-    die("Lỗi đặt hàng: " . $e->getMessage());
+} catch (Throwable $e) {
+  if ($pdo->inTransaction()) $pdo->rollBack();
+  flash_set('err', 'Lỗi DB: ' . $e->getMessage());
+  redirect(base_url('trang_nguoi_dung/thanh_toan.php'));
+  exit;
 }
+
+// ================== Gửi OTP qua email ==================
+$subject = "Mã OTP xác nhận đơn hàng {$ma_don_hang}";
+$html = "
+  <div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>
+    <h2 style='margin:0 0 10px'>Xác nhận đơn hàng</h2>
+    <p>Vui lòng nhập mã OTP sau để xác nhận đơn hàng <b>{$ma_don_hang}</b>:</p>
+    <div style='font-size:30px;font-weight:800;letter-spacing:6px;margin:14px 0'>{$otp}</div>
+    <p>Mã có hiệu lực trong <b>10 phút</b>.</p>
+  </div>
+";
+
+$sent = send_email($email, $subject, $html);
+if (!$sent) {
+  flash_set('err', 'Tạo đơn thành công nhưng gửi OTP thất bại. ' . ($GLOBALS['MAIL_LAST_ERROR'] ?? ''));
+}
+
+// LUÔN chuyển sang trang nhập OTP
+redirect(base_url('trang_nguoi_dung/xac_nhan_dat_hang.php?don=' . $id_don));
+exit;

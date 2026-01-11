@@ -14,15 +14,35 @@ function _flash_get() {
   return $f;
 }
 
+/* ================= helper: check column exists ================= */
+function _col_exists($pdo, $table, $col) {
+  try {
+    $q = $pdo->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+    $q->execute([$col]);
+    return (bool)$q->fetch(PDO::FETCH_ASSOC);
+  } catch (Throwable $e) {
+    return false;
+  }
+}
+
 /* ================= ID ================= */
 $id = (int)($_GET['id'] ?? 0);
 if ($id <= 0) die('Sản phẩm không tồn tại');
 
-/* ================= SẢN PHẨM ================= */
-$stmt = $pdo->prepare("SELECT * FROM sanpham WHERE id_san_pham=? LIMIT 1");
+/* ================= SẢN PHẨM (đồng nhất ẩn/hiện + danh mục bật) ================= */
+$stmt = $pdo->prepare("
+  SELECT s.*
+  FROM sanpham s
+  JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+  WHERE s.id_san_pham=?
+    AND s.hien_thi=1
+    AND s.trang_thai=1
+    AND dm.hien_thi=1
+  LIMIT 1
+");
 $stmt->execute([$id]);
 $sp = $stmt->fetch(PDO::FETCH_ASSOC);
-if (!$sp) die('Không tìm thấy sản phẩm');
+if (!$sp) die('Sản phẩm không khả dụng hoặc đã bị ẩn');
 
 /* ================= GIÁ HIỆU LỰC ================= */
 $gia_goc = (int)($sp['gia'] ?? 0);
@@ -32,6 +52,25 @@ $gia_hieu_luc = (int)($co_km ? $gia_km : $gia_goc);
 
 /* ================= ADD TO CART / BUY NOW ================= */
 if (isset($_POST['add_to_cart']) || isset($_POST['buy_now'])) {
+
+  // Re-check sản phẩm còn hợp lệ (tránh trường hợp admin vừa ẩn)
+  $stmt = $pdo->prepare("
+    SELECT s.id_san_pham
+    FROM sanpham s
+    JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+    WHERE s.id_san_pham=?
+      AND s.hien_thi=1
+      AND s.trang_thai=1
+      AND dm.hien_thi=1
+    LIMIT 1
+  ");
+  $stmt->execute([$id]);
+  if (!$stmt->fetch()) {
+    _flash_set('error', 'Sản phẩm không khả dụng hoặc đã bị ẩn.');
+    header("Location: trang_chu.php");
+    exit;
+  }
+
   $size = trim($_POST['size'] ?? '');
   $qty  = max(1, (int)($_POST['qty'] ?? 1));
 
@@ -116,28 +155,42 @@ if (isset($_POST['gui_danh_gia']) && $da_mua) {
 }
 
 /* ================= ĐÁNH GIÁ ĐÃ DUYỆT =================
-   Bảng danh_gia của bạn KHÔNG có ngay_tao, nên order theo id_danh_gia DESC
+   Tránh lỗi thiếu cột: tự dò cột sắp xếp hợp lệ.
 */
-$stmt = $pdo->prepare("
+$orderCol = null;
+if (_col_exists($pdo, 'danh_gia', 'ngay_tao'))        $orderCol = 'ngay_tao';
+elseif (_col_exists($pdo, 'danh_gia', 'created_at'))  $orderCol = 'created_at';
+elseif (_col_exists($pdo, 'danh_gia', 'id_danh_gia')) $orderCol = 'id_danh_gia';
+elseif (_col_exists($pdo, 'danh_gia', 'id'))          $orderCol = 'id';
+
+$sqlReview = "
   SELECT dg.so_sao, dg.noi_dung, nd.ho_ten
   FROM danh_gia dg
   JOIN nguoidung nd ON dg.id_nguoi_dung = nd.id_nguoi_dung
   WHERE dg.id_san_pham=? AND dg.trang_thai=1
-");
+";
+if ($orderCol) {
+  $sqlReview .= " ORDER BY dg.`$orderCol` DESC";
+}
+
+$stmt = $pdo->prepare($sqlReview);
 $stmt->execute([$id]);
 $danh_gia = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-
 
 $total_review = count($danh_gia);
 $avg_star = $total_review
   ? round(array_sum(array_column($danh_gia, 'so_sao')) / $total_review, 1)
   : 0;
 
-/* ================= SẢN PHẨM LIÊN QUAN ================= */
+/* ================= SẢN PHẨM LIÊN QUAN (lọc ẩn/hiện + danh mục bật) ================= */
 $stmt = $pdo->prepare("
-  SELECT * FROM sanpham
-  WHERE id_danh_muc=? AND id_san_pham!=?
+  SELECT s.*
+  FROM sanpham s
+  JOIN danhmuc dm ON dm.id_danh_muc = s.id_danh_muc
+  WHERE s.id_danh_muc=? AND s.id_san_pham!=?
+    AND s.hien_thi=1
+    AND s.trang_thai=1
+    AND dm.hien_thi=1
   ORDER BY RAND() LIMIT 6
 ");
 $stmt->execute([$sp['id_danh_muc'], $id]);
@@ -268,15 +321,15 @@ $flash = _flash_get();
                      class="w-24 border rounded-lg text-center font-black py-2">
             </div>
 
-            <!-- BUTTONS (disable until size selected) -->
+            <!-- BUTTONS (giả disabled cho tới khi chọn size) -->
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button type="submit" name="add_to_cart" data-requires-size="1" disabled
+              <button type="submit" name="add_to_cart" data-requires-size="1"
                       class="w-full bg-black text-white py-4 rounded-full font-black
                              hover:opacity-90 active:scale-[0.99] transition opacity-50 cursor-not-allowed">
                 Thêm vào giỏ
               </button>
 
-              <button type="submit" name="buy_now" data-requires-size="1" disabled
+              <button type="submit" name="buy_now" data-requires-size="1"
                       class="w-full border-2 border-black py-4 rounded-full font-black
                              hover:bg-black hover:text-white active:scale-[0.99] transition opacity-50 cursor-not-allowed">
                 Mua ngay
@@ -449,7 +502,7 @@ $flash = _flash_get();
     }, { passive: true });
   })();
 
-  /* ================= Bắt buộc chọn size: enable nút + cảnh báo ================= */
+  /* ================= Bắt buộc chọn size: toast khi chưa chọn ================= */
   (function () {
     const form = document.querySelector('form[method="post"]');
     const sizeBox = document.getElementById('sizeBox');
@@ -462,11 +515,11 @@ $flash = _flash_get();
       return !!document.querySelector('input[name="size"]:checked');
     }
 
-    function setButtonsEnabled(enabled) {
+    function renderButtonState() {
+      const ok = hasSize();
       buttons.forEach(btn => {
-        btn.disabled = !enabled;
-        btn.classList.toggle('opacity-50', !enabled);
-        btn.classList.toggle('cursor-not-allowed', !enabled);
+        btn.classList.toggle('opacity-50', !ok);
+        btn.classList.toggle('cursor-not-allowed', !ok);
       });
     }
 
@@ -479,14 +532,15 @@ $flash = _flash_get();
       sizeBox.classList.add('ring-2', 'ring-red-500', 'rounded-xl', 'p-2');
       if (sizeHint) sizeHint.classList.remove('hidden');
       showToast('error', 'Vui lòng chọn size trước khi mua hoặc thêm vào giỏ.');
+      sizeBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
-    setButtonsEnabled(hasSize());
+    renderButtonState();
 
     sizeInputs.forEach(i => {
       i.addEventListener('change', () => {
         clearError();
-        setButtonsEnabled(true);
+        renderButtonState();
       });
     });
 
@@ -494,8 +548,18 @@ $flash = _flash_get();
       if (!hasSize()) {
         e.preventDefault();
         showError();
-        setButtonsEnabled(false);
+        renderButtonState();
       }
+    });
+
+    buttons.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        if (!hasSize()) {
+          e.preventDefault();
+          showError();
+          renderButtonState();
+        }
+      });
     });
   })();
 
@@ -518,12 +582,8 @@ $flash = _flash_get();
     const btn1 = document.getElementById('btnFav');
     const btn2 = document.getElementById('btnFavText');
 
-    if (btn1) {
-      btn1.addEventListener('click', () => addFav(btn1.dataset.id));
-    }
-    if (btn2) {
-      btn2.addEventListener('click', () => addFav(btn2.dataset.id));
-    }
+    if (btn1) btn1.addEventListener('click', () => addFav(btn1.dataset.id));
+    if (btn2) btn2.addEventListener('click', () => addFav(btn2.dataset.id));
   })();
 </script>
 

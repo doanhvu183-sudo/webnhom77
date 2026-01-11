@@ -82,30 +82,13 @@ function _validate_voucher_($pdo, $ma, $tong_tien, $uid) {
     return [true, $vc, null];
 }
 
-/* ================== ÁP DỤNG VOUCHER (NHẬP TAY) ================== */
+/* ================== ÁP DỤNG VOUCHER (1 NÚT - nhập hoặc chọn) ================== */
 if (isset($_POST['ap_dung_voucher'])) {
     $ma = trim($_POST['voucher'] ?? '');
     $uid = _get_uid_();
 
-    [$ok, $vc, $err] = _validate_voucher_($pdo, $ma, $tong_tien, $uid);
-
-    if (!$ok) {
-        $_SESSION['voucher_error'] = $err;
-        _redirect_cart_();
-    }
-
-    $_SESSION['voucher'] = $vc;
-    unset($_SESSION['voucher_error']);
-    _redirect_cart_();
-}
-
-/* ================== CHỌN VOUCHER TỪ DROPDOWN ================== */
-if (isset($_POST['ap_dung_voucher_chon'])) {
-    $ma = trim($_POST['voucher_chon'] ?? '');
-    $uid = _get_uid_();
-
-    // Không dùng voucher
-    if ($ma === '' || $ma === 'NONE') {
+    // Nếu rỗng => không dùng voucher
+    if ($ma === '') {
         unset($_SESSION['voucher']);
         unset($_SESSION['voucher_error']);
         _redirect_cart_();
@@ -296,100 +279,135 @@ $tong_thanh_toan = max(0, $tong_tien - $tien_giam);
 </div>
 <?php endif; ?>
 
-<!-- ================= VOUCHER ================= -->
-<div class="border-t pt-4 mt-4 space-y-4">
+<!-- ================= VOUCHER (1 Ô DUY NHẤT) ================= -->
+<div class="border-t pt-4 mt-4 space-y-3">
 
-    <!-- Nhập mã voucher -->
-    <form method="post" class="space-y-2">
-        <label class="block text-sm font-bold">Nhập mã giảm giá</label>
-        <div class="flex gap-2">
-            <input name="voucher"
-                   placeholder="Nhập mã voucher"
-                   class="flex-1 border rounded px-3 py-2 text-sm">
-            <button name="ap_dung_voucher"
-                    class="bg-black text-white px-4 rounded font-bold text-sm">
-                Áp dụng
-            </button>
-        </div>
-    </form>
+  <label class="block text-sm font-bold">Mã giảm giá</label>
 
-    <!-- Voucher của bạn (dropdown) -->
-    <div class="space-y-2">
-        <label class="block text-sm font-bold">Voucher của bạn</label>
+  <?php if (!$uid): ?>
+    <div class="text-sm text-gray-500 italic">
+      Đăng nhập để xem voucher có thể sử dụng.
+    </div>
+  <?php endif; ?>
 
-        <?php if (!$uid): ?>
-            <p class="text-sm text-gray-2 italic">Đăng nhập để xem voucher có thể sử dụng.</p>
-        <?php else: ?>
-            <?php if (empty($voucher_co_the_dung)): ?>
-                <p class="text-sm text-gray-2 italic">Chưa có voucher phù hợp để sử dụng.</p>
-            <?php else: ?>
-                <form method="post" class="flex gap-2">
-                    <select name="voucher_chon" class="flex-1 border rounded px-3 py-2 text-sm">
-                        <option value="NONE">Không dùng voucher</option>
+  <form method="post" class="space-y-2">
+    <div class="flex gap-2">
+      <!-- Input mã -->
+      <input
+        id="voucherInput"
+        name="voucher"
+        value="<?= htmlspecialchars($_SESSION['voucher']['ma_voucher'] ?? '') ?>"
+        placeholder="Nhập mã voucher hoặc chọn bên phải"
+        class="flex-1 border rounded px-3 py-2 text-sm"
+        autocomplete="off"
+      >
 
-                        <?php foreach ($voucher_co_the_dung as $v): ?>
-                            <?php
-                                $ma = $v['ma_voucher'] ?? '';
-                                $loai = $v['loai'] ?? '';
-                                $gt = (int)($v['gia_tri'] ?? 0);
-                                $dk = (int)($v['dieu_kien_toi_thieu'] ?? 0);
-                                $max = (int)($v['giam_toi_da'] ?? 0);
-                                $het_han = $v['ngay_ket_thuc'] ?? null;
+      <!-- Dropdown chọn voucher -->
+      <div class="relative">
+        <select
+  id="voucherSelect"
+  class="border rounded px-3 py-2 text-sm pr-8 appearance-none w-full"
+  style="max-width: 100%;"
+  <?= !$uid ? 'disabled' : '' ?>
+        >
+          <option value="NONE">Không dùng voucher</option>
 
-                                $mo_ta = '';
-                                if ($loai === 'TIEN') {
-                                    $mo_ta = 'Giảm ' . number_format($gt) . '₫';
-                                } elseif ($loai === 'PHAN_TRAM') {
-                                    $mo_ta = 'Giảm ' . $gt . '%';
-                                    if ($max > 0) $mo_ta .= ' (tối đa ' . number_format($max) . '₫)';
-                                } else {
-                                    $mo_ta = 'Voucher';
-                                }
+          <?php if ($uid && !empty($voucher_co_the_dung)): ?>
+            <?php foreach ($voucher_co_the_dung as $v): ?>
+              <?php
+                $ma = $v['ma_voucher'] ?? '';
+                $loai = $v['loai'] ?? '';
+                $gt = (int)($v['gia_tri'] ?? 0);
+                $dk = (int)($v['dieu_kien_toi_thieu'] ?? 0);
+                $max = (int)($v['giam_toi_da'] ?? 0);
+                $het_han = $v['ngay_ket_thuc'] ?? null;
 
-                                if ($dk > 0) $mo_ta .= ' - ĐH tối thiểu ' . number_format($dk) . '₫';
-                                if ($het_han) $mo_ta .= ' - HSD: ' . htmlspecialchars($het_han);
+                $mo_ta = '';
+                if ($loai === 'TIEN') {
+                  $mo_ta = 'Giảm ' . number_format($gt) . '₫';
+                  if ($max > 0) $mo_ta .= ' (tối đa ' . number_format($max) . '₫)';
+                } elseif ($loai === 'PHAN_TRAM') {
+                  $mo_ta = 'Giảm ' . $gt . '%';
+                  if ($max > 0) $mo_ta .= ' (tối đa ' . number_format($max) . '₫)';
+                } else {
+                  $mo_ta = 'Voucher';
+                }
 
-                                $disabled = ($dk > 0 && $tong_tien < $dk); // không đủ điều kiện thì disable
-                                $selected = (!empty($_SESSION['voucher']) && (($_SESSION['voucher']['ma_voucher'] ?? '') === $ma));
-                            ?>
-                            <option value="<?= htmlspecialchars($ma) ?>"
-                                <?= $selected ? 'selected' : '' ?>
-                                <?= $disabled ? 'disabled' : '' ?>>
-                                <?= htmlspecialchars($ma) ?> — <?= htmlspecialchars($mo_ta) ?><?= $disabled ? ' (Chưa đủ điều kiện)' : '' ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                if ($dk > 0) $mo_ta .= ' • ĐH ≥ ' . number_format($dk) . '₫';
+                if ($het_han) $mo_ta .= ' • HSD ' . htmlspecialchars($het_han);
 
-                    <button name="ap_dung_voucher_chon"
-                            class="bg-black text-white px-4 rounded font-bold text-sm">
-                        Chọn
-                    </button>
-                </form>
-            <?php endif; ?>
+                $disabled = ($dk > 0 && $tong_tien < $dk);
+                $selected = (!empty($_SESSION['voucher']) && (($_SESSION['voucher']['ma_voucher'] ?? '') === $ma));
+              ?>
+              <option
+                value="<?= htmlspecialchars($ma) ?>"
+                <?= $selected ? 'selected' : '' ?>
+                <?= $disabled ? 'disabled' : '' ?>
+              >
+                <?= htmlspecialchars($ma) ?> — <?= htmlspecialchars($mo_ta) ?><?= $disabled ? ' (Chưa đủ điều kiện)' : '' ?>
+              </option>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </select>
 
-            <?php if (!empty($_SESSION['voucher'])): ?>
-                <form method="post">
-                    <button name="huy_voucher"
-                            class="w-full border border-black py-2 rounded font-bold text-sm hover:bg-black hover:text-white transition">
-                        Hủy voucher đang áp dụng
-                    </button>
-                </form>
-            <?php endif; ?>
-        <?php endif; ?>
+        <!-- Icon mũi tên -->
+        <span
+          class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
+          style="font-size:12px;"
+        >▼</span>
+      </div>
+    </div>
+
+    <div class="flex gap-2">
+      <!-- ÁP DỤNG -->
+      <button
+        type="submit"
+        name="ap_dung_voucher"
+        class="bg-black text-white px-4 py-2 rounded font-bold text-sm"
+      >
+        Áp dụng
+      </button>
+
+      <!-- HỦY -->
+      <button
+        type="submit"
+        name="huy_voucher"
+        class="border border-black px-4 py-2 rounded font-bold text-sm hover:bg-black hover:text-white transition"
+      >
+        Hủy
+      </button>
     </div>
 
     <!-- Thông báo -->
     <?php if (!empty($_SESSION['voucher_error'])): ?>
-        <p class="text-red-600 text-sm">
-            <?= htmlspecialchars($_SESSION['voucher_error']); unset($_SESSION['voucher_error']); ?>
-        </p>
+      <p class="text-red-600 text-sm">
+        <?= htmlspecialchars($_SESSION['voucher_error']); unset($_SESSION['voucher_error']); ?>
+      </p>
     <?php endif; ?>
 
     <?php if (!empty($_SESSION['voucher'])): ?>
-        <p class="text-green-600 text-sm font-bold">
-            ✔ Đã áp dụng <?= htmlspecialchars($_SESSION['voucher']['ma_voucher'] ?? '') ?>
-        </p>
+      <p class="text-green-600 text-sm font-bold">
+        ✔ Đã áp dụng <?= htmlspecialchars($_SESSION['voucher']['ma_voucher'] ?? '') ?>
+      </p>
     <?php endif; ?>
+  </form>
+
+  <script>
+  (function(){
+    var sel = document.getElementById('voucherSelect');
+    var inp = document.getElementById('voucherInput');
+    if(!sel || !inp) return;
+
+    sel.addEventListener('change', function(){
+      var v = sel.value || '';
+      if(v === 'NONE'){
+        inp.value = '';
+      } else {
+        inp.value = v;
+      }
+    });
+  })();
+  </script>
 
 </div>
 
